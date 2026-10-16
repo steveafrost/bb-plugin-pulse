@@ -1,0 +1,45 @@
+{
+  "name": "bb-plugin-pulse",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "A live board of what needs you from Slack, Gmail and Calendar, kept current by scheduled bb agent runs.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/steveafrost/bb-plugin-pulse.git"
+  },
+  "license": "MIT",
+  "bin": {
+    "pulse": "./bin/pulse.mjs"
+  },
+  "scripts": {
+    "build": "bb plugin build",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs && node --experimental-strip-types --test test/*.test.ts"
+  },
+  "engines": {
+    "bb": ">=0.46",
+    "bbPluginSdk": ">=0.6.37"
+  },
+  "bb": {
+    "name": "Pulse",
+    "description": "One live board of what needs you from Slack, Gmail and Calendar. Scheduled agent runs write the items; Done and Snooze stick; quick actions copy a prepared reply; the robot hands an item to an agent thread.",
+    "branding": {
+      "icon": "./assets/icon.svg"
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx",
+    "skills": [
+      "skills"
+    ]
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.6.37",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "typescript": "^5.7.0"
+  }
+}
