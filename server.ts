@@ -203,7 +203,45 @@ export default async function plugin(bb: BbPluginApi) {
   // ---- Capture runs (plugin-owned schedules) ----
   const pausedKey = (name: RunName) => `paused:${name}`;
   const threadKey = (name: RunName) => `thread:${name}`;
-  const forgetRunThread = async (name: RunName) => { await bb.storage.kv.delete(threadKey(name)); };
+  /**
+   * A run's thread id, from plugin kv or the store's durable `runThreads` map.
+   * The store copy exists because `bb plugin remove` wipes kv; without it every
+   * reinstall would spawn a fresh thread for each run.
+   */
+  const storedRunThread = async (name: RunName): Promise<string | null> => {
+    const cached = await bb.storage.kv.get<string>(threadKey(name));
+    if (cached) return cached;
+    // kv is the fast path; the store copy only matters after a reinstall. A store
+    // read failure must not break an otherwise healthy run, so treat it as absent.
+    try {
+      const durable = storeModule.getRunThreads(home)?.[name];
+      return typeof durable === "string" && durable ? durable : null;
+    } catch (error) {
+      bb.log.warn(`could not read run threads from ${home}: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+  };
+  /**
+   * Remember a run's thread in both places: kv for speed, the store directory so
+   * it survives a plugin reinstall. A failed store write must not fail the run —
+   * the thread works either way, only the next reinstall loses the id.
+   */
+  const rememberRunThread = async (name: RunName, threadId: string) => {
+    await bb.storage.kv.set(threadKey(name), threadId);
+    try {
+      storeModule.setRunThread(name, threadId, home);
+    } catch (error) {
+      bb.log.warn(`could not persist ${name} run thread to ${home}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+  const forgetRunThread = async (name: RunName) => {
+    await bb.storage.kv.delete(threadKey(name));
+    try {
+      storeModule.setRunThread(name, null, home);
+    } catch (error) {
+      bb.log.warn(`could not clear ${name} run thread from ${home}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
   /**
    * Whether a run thread can still receive a message. "dead" means the host answered definitively
    * that the thread is gone (archived, deleted, or unknown id) — retrying that id can only fail
@@ -228,7 +266,7 @@ export default async function plugin(bb: BbPluginApi) {
   const resolveRunThread = async (name: RunName, { prune = false } = {}): Promise<string | null> => {
     const pinned = config.threads[name];
     if (pinned && (await probeRunThread(pinned)) !== "dead") return pinned;
-    const cached = await bb.storage.kv.get<string>(threadKey(name));
+    const cached = await storedRunThread(name);
     if (!cached) return null;
     const state = await probeRunThread(cached);
     if (state !== "dead") return cached;
@@ -256,6 +294,25 @@ export default async function plugin(bb: BbPluginApi) {
 
   /** Send a run's prompt to its thread (created on first run). Queues behind a turn already in progress. */
   const runStarting = new Set<RunName>();
+  /**
+   * A run thread is hidden from bb's thread list. It stays alive and sendable —
+   * hidden is not archived, and archiving is exactly what wedged runs before.
+   */
+  const RUN_THREAD_VISIBILITY = "hidden" as const;
+  /**
+   * Hide a run thread that predates this default, so an upgraded install does not
+   * keep one visible Pulse row per run. Best-effort: a refusal must not fail a run.
+   */
+  const hideRunThread = async (name: RunName, threadId: string) => {
+    try {
+      const thread = await bb.sdk.threads.get({ threadId });
+      if (thread.visibility === RUN_THREAD_VISIBILITY) return;
+      await bb.sdk.threads.update({ threadId, visibility: RUN_THREAD_VISIBILITY });
+      bb.log.info(`${name} run thread ${threadId} is now hidden`);
+    } catch (error) {
+      bb.log.warn(`could not hide ${name} run thread ${threadId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
   /** A 409 from a send that means the thread itself is unusable, not a transient conflict. */
   const deadThread = (cause: unknown) => /thread is archived|environment is unavailable|thread not found/i.test(cause instanceof Error ? cause.message : String(cause));
   async function startRun(name: RunName, trigger: "schedule" | "manual"): Promise<string> {
@@ -273,6 +330,7 @@ export default async function plugin(bb: BbPluginApi) {
           ...(Object.keys(sources).length ? { executionInputSources: sources } : {}),
         });
         bb.log.info(`${trigger} ${name} run → ${existing}`);
+        void hideRunThread(name, existing);
         return existing;
       } catch (cause) {
         // The thread died between the probe above and this send (archived, deleted, or its
@@ -293,10 +351,11 @@ export default async function plugin(bb: BbPluginApi) {
         environment: { type: "project-default" },
         title: `Pulse ${RUN_LABEL[name]}`,
         prompt: text,
+        visibility: RUN_THREAD_VISIBILITY,
         ...execution(),
         pluginMetadata: { pulseRun: name },
       });
-      await bb.storage.kv.set(threadKey(name), thread.id);
+      await rememberRunThread(name, thread.id);
       bb.log.info(`${trigger} ${name} run → new thread ${thread.id}`);
       publish();
       return thread.id;
