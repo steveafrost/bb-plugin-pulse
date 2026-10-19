@@ -203,14 +203,47 @@ export default async function plugin(bb: BbPluginApi) {
   // ---- Capture runs (plugin-owned schedules) ----
   const pausedKey = (name: RunName) => `paused:${name}`;
   const threadKey = (name: RunName) => `thread:${name}`;
-  const runThreadId = async (name: RunName) => config.threads[name] || (await bb.storage.kv.get<string>(threadKey(name))) || null;
+  const forgetRunThread = async (name: RunName) => { await bb.storage.kv.delete(threadKey(name)); };
+  /**
+   * Whether a run thread can still receive a message. "dead" means the host answered definitively
+   * that the thread is gone (archived, deleted, or unknown id) — retrying that id can only fail
+   * again, so it is safe to discard. "unknown" means the probe itself failed for some other
+   * reason; the thread may still be fine, so the caller keeps it and lets the send decide.
+   */
+  const probeRunThread = async (id: string): Promise<"ok" | "dead" | "unknown"> => {
+    try {
+      const thread = await bb.sdk.threads.get({ threadId: id });
+      return thread.archivedAt || thread.deletedAt ? "dead" : "ok";
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      return /not found|archived/i.test(message) ? "dead" : "unknown";
+    }
+  };
+  /**
+   * The thread a run should continue, or null to start a fresh one. The settings-pinned thread
+   * wins over the cached one, but either may have gone stale, so each is probed. `prune` drops a
+   * dead cached id from storage — only the run path does that; a panel refresh must not mutate
+   * state, and an inconclusive probe leaves the id alone so a flaky call cannot churn threads.
+   */
+  const resolveRunThread = async (name: RunName, { prune = false } = {}): Promise<string | null> => {
+    const pinned = config.threads[name];
+    if (pinned && (await probeRunThread(pinned)) !== "dead") return pinned;
+    const cached = await bb.storage.kv.get<string>(threadKey(name));
+    if (!cached) return null;
+    const state = await probeRunThread(cached);
+    if (state !== "dead") return cached;
+    if (!prune) return null;
+    bb.log.warn(`${name} run thread ${cached} is archived or gone; starting a new one`);
+    await forgetRunThread(name);
+    return null;
+  };
 
   async function loadAutomations(): Promise<Automation[]> {
     return Promise.all(
       RUN_NAMES.map(async (run) => {
         const cron = config.cron[run];
         const enabled = (await bb.storage.kv.get<boolean>(pausedKey(run))) !== true && cron !== "";
-        return { run, label: RUN_LABEL[run], threadId: await runThreadId(run), schedule: cron || null, enabled, nextRunAt: enabled ? nextCronRun(cron)?.toISOString() ?? null : null };
+        return { run, label: RUN_LABEL[run], threadId: await resolveRunThread(run), schedule: cron || null, enabled, nextRunAt: enabled ? nextCronRun(cron)?.toISOString() ?? null : null };
       }),
     );
   }
@@ -223,21 +256,32 @@ export default async function plugin(bb: BbPluginApi) {
 
   /** Send a run's prompt to its thread (created on first run). Queues behind a turn already in progress. */
   const runStarting = new Set<RunName>();
+  /** A 409 from a send that means the thread itself is unusable, not a transient conflict. */
+  const deadThread = (cause: unknown) => /thread is archived|environment is unavailable|thread not found/i.test(cause instanceof Error ? cause.message : String(cause));
   async function startRun(name: RunName, trigger: "schedule" | "manual"): Promise<string> {
     if (!config.projectId) throw new Error("Choose a project in Pulse settings first");
     const stamp = new Date().toLocaleString("en-US", { timeZone: config.timeZone, dateStyle: "medium", timeStyle: "short" });
     const text = `[Pulse ${trigger === "manual" ? "manual" : "scheduled"} ${name} run · ${stamp}]\n\n${runPrompt(name, promptContext())}`;
-    const existing = await runThreadId(name);
+    const existing = await resolveRunThread(name, { prune: true });
     if (existing) {
       const sources = Object.fromEntries(Object.keys(execution()).map((k) => [k, "explicit"]));
-      await bb.sdk.threads.send({
-        threadId: existing, mode: "queue-if-active",
-        input: [{ type: "text", mentions: [], text }],
-        ...execution(),
-        ...(Object.keys(sources).length ? { executionInputSources: sources } : {}),
-      });
-      bb.log.info(`${trigger} ${name} run → ${existing}`);
-      return existing;
+      try {
+        await bb.sdk.threads.send({
+          threadId: existing, mode: "queue-if-active",
+          input: [{ type: "text", mentions: [], text }],
+          ...execution(),
+          ...(Object.keys(sources).length ? { executionInputSources: sources } : {}),
+        });
+        bb.log.info(`${trigger} ${name} run → ${existing}`);
+        return existing;
+      } catch (cause) {
+        // The thread died between the probe above and this send (archived, deleted, or its
+        // environment reclaimed). Retrying the same id can only fail again, so drop it and
+        // spawn a replacement — otherwise this schedule stays wedged until a human intervenes.
+        if (!deadThread(cause)) throw cause;
+        bb.log.warn(`${name} run thread ${existing} became unusable (${cause instanceof Error ? cause.message : String(cause)}); starting a new one`);
+        await forgetRunThread(name);
+      }
     }
     if (runStarting.has(name)) throw new Error(`The ${name} thread is already being created`);
     runStarting.add(name);
