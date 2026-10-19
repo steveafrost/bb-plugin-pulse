@@ -22,7 +22,17 @@ export interface PromptContext {
 }
 
 export const DEFAULT_SOURCES =
-  "Use whatever Slack, Gmail and Google Calendar tools you have (MCP servers, CLIs or plugins). Read only; never send, post, react or create drafts. If a source is unavailable, skip it and report it with --errors.";
+  "Use whatever Slack, Gmail and Google Calendar tools you have (MCP servers, CLIs or plugins). Read only; never send, post, react or create drafts. Only sources described here are in use: a source this setting does not describe is not set up, so skip it and do not report it.";
+
+/**
+ * How a run reports a source it could not read. Setup is the setting's job: the
+ * sources text above names what is in use, so an unmentioned source is simply
+ * absent and must stay out of --errors. Only a source that IS described and then
+ * fails is worth surfacing — that one has a broken credential or tool, and the
+ * user needs to know before the next run repeats the failure.
+ */
+export const ERRORS_RULE =
+  "Only report a source with `--errors` when the sources text above describes it AND you could not read it in this run (expired credentials, CLI missing, API error) \u2014 quote the tool's own message. Never report a source the sources text does not describe: that source is not set up, so checking it, mentioning it or logging an error for it is noise the user did not ask for. No errors is the normal case.";
 
 function body(c: PromptContext): string {
   const u = c.user;
@@ -31,6 +41,7 @@ function body(c: PromptContext): string {
 State lives in the Pulse store, not in prose. In this prompt \`pulse\` means: \`${c.cli}\`. Use that full command in every shell call (run \`pulse help\` once if unsure). Never edit its JSON files directly.
 1. Start: \`pulse list\` (open + waiting items) and \`pulse runs --limit 3\` (what prior runs covered). Read the run memory file listed below for tool tips only.
 2. Gather Slack, Gmail and Calendar. ${c.sources.trim()} Window: since the last run with this run name (from \`pulse runs\`), with a small overlap.
+   - Sources: ${ERRORS_RULE}
 3. Write back with one \`pulse upsert --run <name>\` call (JSON array on stdin):
    - New thing that needs ${u} -> new item. IDs must be stable source IDs: \`slack:<channel>/<thread_ts>\`, \`gmail:<threadId>\`, \`calendar:<eventId>\`, \`docs:<fileId>\`, \`github:<owner/repo>#<n>\`.
    - kind: reply | decision | rsvp | conflict | deadline | review | followup | fyi. Use \`fyi\` only for things ${u} needs no action on but would want to know (announcements, decisions made without them, org/project changes, useful context); they show under Nice to Know. For \`fyi\`: \`title\` is one line saying what happened, \`detail\` one short sentence, include \`url\`, no \`due\`/\`priority\`. Set \`due\` (ISO) when there is a real deadline or meeting time; \`priority: high\` only for same-day or blocking items.
@@ -43,7 +54,7 @@ State lives in the Pulse store, not in prose. In this prompt \`pulse\` means: \`
    - Existing item that cleared -> \`{"id", "status":"resolved", "reason"}\`. Item now waiting on someone else -> \`status: "waiting"\`.
    - ${u}'s done / dismissed / snoozed state is sticky; only send \`reopen: true\` with a \`reason\` if there is genuinely new activity that needs them.
    - Skip pure noise (bots, newsletters, routine sign-in notices, social chatter, things ${u} already saw or replied to) entirely. If unsure whether something is useful context or noise, skip it.
-4. Finish: \`pulse log --run <name> --summary "<one line>" --sources slack,gmail,calendar [--errors "..."]\`. Then append one dated line (${c.timeZone}) to the run memory file only if you learned a reusable tool tip or hit a source failure.`;
+4. Finish: \`pulse log --run <name> --summary "<one line>" --sources <the sources you actually read> [--errors "..."]\`. Omit \`--errors\` unless a described source failed. Then append one dated line (${c.timeZone}) to the run memory file only if you learned a reusable tool tip or hit a described-source failure.`;
 }
 
 interface RunSpec { header: string; memoryNote?: string; extra?: string; reply?: string }
