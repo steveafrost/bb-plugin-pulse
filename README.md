@@ -25,6 +25,10 @@ store; the panel sorts them into **Now**, **Next**, **Later** and **Nice to Know
 2. Pick a **project** for the run and agent threads.
 3. Say **how agents reach Slack, Gmail and Calendar** on your machine (MCP servers, CLIs or other
    plugins). Pulse has no connectors of its own; it relies on the tools your agents already have.
+   [Source recipes](docs/sources/) has tested, copy-pasteable text for
+   [iCloud](docs/sources/icloud.md), [Google Workspace](docs/sources/google.md) and
+   [Microsoft 365](docs/sources/microsoft.md), plus the ID-prefix and read-only rules that apply to
+   any provider.
 4. Optional: your first name, house rules, a model, schedules, and skill rules for agent threads
    (`skill-name | why | regex`, one per line).
 5. `bb plugin reload pulse`, then press **Run now**.
