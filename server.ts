@@ -20,6 +20,7 @@ import * as storeModule from "./lib/store.mjs";
 import { nextCronRun } from "./lib/cron";
 import { DEFAULT_SOURCES, runPrompt, type PromptContext, type RunName } from "./lib/prompts";
 import { parseSkillRules, skillsFor, type SkillRef, type SkillRule } from "./lib/skills";
+import { threadGone } from "./lib/thread-gone";
 import type { ActionStatus, Automation, ItemAction, PulseItem, PulseSnapshot } from "./types";
 
 type Home = string;
@@ -253,8 +254,7 @@ export default async function plugin(bb: BbPluginApi) {
       const thread = await bb.sdk.threads.get({ threadId: id });
       return thread.archivedAt || thread.deletedAt ? "dead" : "ok";
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      return /not found|archived/i.test(message) ? "dead" : "unknown";
+      return threadGone(cause) ? "dead" : "unknown";
     }
   };
   /**
@@ -508,7 +508,9 @@ export default async function plugin(bb: BbPluginApi) {
           settle(threadId, "ready", readySummary(out.output));
         }
       } catch (error) {
-        bb.log.warn(`reconcile ${threadId}: ${error instanceof Error ? error.message : String(error)}`);
+        // A deleted thread answers 404 forever; settle it instead of retrying every pass.
+        if (threadGone(error)) settle(threadId, "failed", "Action thread was archived or deleted");
+        else bb.log.warn(`reconcile ${threadId}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   }
