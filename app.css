@@ -84,6 +84,8 @@
 .pulse-tag { padding: 0 6px; border-radius: var(--p-radius-sm); background: var(--p-fill); color: var(--p-muted); line-height: 1.6; }
 .pulse-tag--high { color: var(--p-fail); }
 .pulse-tag--low { color: var(--p-faint); }
+/* A change queued for the iPhone: visible, but quieter than a real state change. */
+.pulse-tag--pending { color: var(--p-accent, var(--p-muted)); border: 1px dashed var(--p-line); background: transparent; }
 .pulse-due { color: var(--p-text); font-weight: 500; }
 .pulse-due--soon { color: var(--p-warn); }
 .pulse-due--overdue { color: var(--p-fail); }
@@ -130,6 +132,16 @@
 .pulse-empty { margin: 0; padding: 10px 12px; color: var(--p-faint); border: 1px dashed var(--p-line); border-radius: var(--p-radius); }
 .pulse-setup { padding: 10px 12px; border-radius: var(--p-radius); border: 1px solid var(--border-seam, var(--p-line)); background: var(--surface-recessed, var(--p-surface)); color: var(--p-muted); }
 .pulse-error { padding: 8px 12px; border-radius: var(--p-radius); border: 1px solid var(--p-fail); color: var(--p-fail); }
+
+/* Mirror state: the board is a view of the iPhone's snapshot, so say when that read fails. */
+.pulse-mirror { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; padding: 8px 12px; border-radius: var(--p-radius); border: 1px solid var(--p-line); background: var(--p-fill); color: var(--p-muted); font-size: 0.8rem; }
+.pulse-mirror b { color: var(--p-text); font-weight: 600; }
+.pulse-mirror span { color: var(--p-faint); overflow-wrap: anywhere; }
+.pulse-mirror--error { border-color: var(--p-fail); }
+.pulse-mirror--error b { color: var(--p-fail); }
+.pulse-mirror--update { border-color: var(--p-warn); }
+.pulse-mirror--update b { color: var(--p-warn); }
+.pulse-mirror--pending { color: var(--p-muted); }
 
 
 .pulse-code { font-family: var(--font-mono, ui-monospace, monospace); font-size: 0.92em; padding: 0 4px; border-radius: 4px; background: var(--p-fill); }

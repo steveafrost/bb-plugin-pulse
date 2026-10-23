@@ -274,6 +274,7 @@ function ItemRow({ item, fresh, compact = false, onAction, onStartAction, onOpen
           {item.status === "waiting" ? <span className="pulse-tag">Waiting on others</span> : null}
           {due && !closed ? <span className={`pulse-due${due.overdue ? " pulse-due--overdue" : due.soon ? " pulse-due--soon" : ""}`}>{due.overdue ? `Was due ${due.text}` : due.text}</span> : null}
           {item.status === "snoozed" && item.snoozedUntil ? <span className="pulse-faint">until {when(item.snoozedUntil)?.text}</span> : null}
+          {item.pending?.length ? <span className="pulse-tag pulse-tag--pending" data-tip="Queued for Pulse on the iPhone">Sent to iPhone</span> : null}
           <ActionChip item={item} onOpen={onOpenAction} />
           {closed ? <span className="pulse-faint">{item.status === "resolved" ? "Resolved" : item.status === "done" ? "Done" : "Dismissed"} {ago(item.resolvedAt ?? item.updatedAt)}{item.resolution ? ` · ${item.resolution}` : ""}</span> : <span className="pulse-faint">seen {ago(item.firstSeenAt)}</span>}
         </div>
@@ -324,8 +325,8 @@ function Section({ title, count, children, collapsible = false, defaultOpen = tr
 
 const HORIZONS: { key: Horizon; title: string; hint: string; empty: string }[] = [
   { key: "now", title: "Now", hint: "High priority or due today", empty: "Nothing urgent." },
-  { key: "next", title: "Next", hint: "Due tomorrow, open with no date, or parked a few days", empty: "Nothing queued." },
-  { key: "later", title: "Later", hint: "Low priority, further out, waiting on others or snoozed", empty: "Nothing parked." },
+  { key: "next", title: "Next", hint: "Due in the next three days", empty: "Nothing queued." },
+  { key: "later", title: "Later", hint: "Further out, waiting on others or snoozed", empty: "Nothing parked." },
   { key: "info", title: "Nice to Know", hint: "FYIs, no action needed", empty: "No FYIs." },
 ];
 
@@ -354,14 +355,18 @@ function CaptureControl({ snapshot, capturing, onCapture, onRun, onToggle, onOpe
   }, [open]);
   const last = latestRun(snapshot);
   const warn = Object.values(snapshot.lastRuns).some((r) => r.errors.length > 0);
+  // With capture on the iPhone there are no Mac schedules to run, so the button
+  // would only ever fail; the snapshot's timestamp says how fresh the board is.
+  const onMac = snapshot.automations.some((a) => a.schedule);
+  const synced = snapshot.mirror.generatedAt;
   return (
     <div className="pulse-capture" ref={ref}>
       <span className={`pulse-faint pulse-capture__when${capturing ? " pulse-capture__when--busy" : ""}${warn ? " pulse-capture--warn" : ""}`} title={last ? `${last.run}: ${last.summary}` : undefined}>
-        {capturing ? "Updating…" : last ? `Updated ${ago(last.finishedAt)}` : "Not captured yet"}
+        {capturing ? "Updating…" : synced ? `Synced ${ago(synced)}${snapshot.mirror.deviceName ? ` from ${snapshot.mirror.deviceName}` : ""}${onMac && last ? ` · ran ${ago(last.finishedAt)}` : ""}` : "Not synced yet"}
       </span>
       <div className="pulse-split">
-        <button type="button" className="pulse-btn pulse-split__main" onClick={onCapture} disabled={capturing}
-          data-tip="Capture the latest from Slack, Email and Calendar">
+        <button type="button" className="pulse-btn pulse-split__main" onClick={onCapture} disabled={capturing || !onMac}
+          data-tip={onMac ? "Capture the latest from Slack, Email and Calendar" : "Pulse captures on the iPhone"}>
           {capturing ? "Running…" : "Run now"}
         </button>
         <button type="button" className="pulse-btn pulse-split__more" onClick={() => setOpen((v) => !v)} aria-haspopup="menu" aria-expanded={open} aria-label="Pulse runs" data-tip={open ? undefined : "All Pulse runs"}>
@@ -701,8 +706,14 @@ function PulsePage() {
   const seenRef = lastViewedOnOpen.current ?? null;
   const { counts } = useMemo(() => boardSummary(items, seenRef), [items, seenRef]);
   const visible = filter === "all" ? items : items.filter((i) => i.source === filter);
+  // Buckets come from lib/horizon.ts, the port of PulseCore's HorizonDerivation,
+  // so the Mac board and the iPhone board place an item in the same section.
   const buckets: Record<Horizon, PulseItem[]> = { now: [], next: [], later: [], info: [] };
-  for (const i of visible) if (isActive(i)) buckets[horizonOf(i)].push(i);
+  for (const i of visible) {
+    if (!isActive(i)) continue;
+    const bucket = horizonOf(i);
+    if (bucket) buckets[bucket].push(i);
+  }
   // Within Later, show actionable items first, then waiting, then snoozed.
   const laterRank = (i: PulseItem) => (i.status === "open" ? 0 : i.status === "waiting" ? 1 : 2);
   buckets.later.sort((a, b) => laterRank(a) - laterRank(b));
@@ -748,9 +759,22 @@ function PulsePage() {
           </div>
         ) : null}
 
+        {snapshot && snapshot.mirror.state !== "connected" ? (
+          <div className={`pulse-mirror pulse-mirror--${snapshot.mirror.state}`} role="status">
+            <b>{snapshot.mirror.state === "not-connected" ? "Not connected to Pulse on the iPhone" : snapshot.mirror.state === "update" ? "Pulse needs a newer plugin" : "Can't read the Pulse snapshot"}</b>
+            <span>{snapshot.mirror.message ?? snapshot.mirror.dir}</span>
+          </div>
+        ) : null}
+
+        {snapshot && snapshot.mirror.pendingCount > 0 ? (
+          <div className="pulse-mirror pulse-mirror--pending" role="status">
+            {snapshot.mirror.pendingCount} change{snapshot.mirror.pendingCount === 1 ? "" : "s"} waiting for the iPhone
+          </div>
+        ) : null}
+
         {snapshot?.needsProject ? (
           <div className="pulse-setup" role="status">
-            Pick a project in <b>Settings › Plugins › Pulse</b> (and say how agents reach Slack, Gmail and Calendar), then reload the plugin. Pulse creates its run threads there on the first run.
+            Pick a project in <b>Settings › Plugins › Pulse</b> (and say how agents reach Slack, Gmail and Calendar), then reload the plugin. Pulse creates agent threads there, and its run threads too while capture runs on this Mac.
           </div>
         ) : null}
 

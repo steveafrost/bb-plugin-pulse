@@ -1,20 +1,24 @@
 ## What you get
 
-A panel in bb's nav rail that lists what needs you from Slack, Gmail and Calendar, sorted into **Now** (high priority or due today), **Next**, **Later** and **Nice to Know** (FYIs that need no action). Filter by source, and anything new since you last looked gets an outline.
+A panel in bb's nav rail listing what needs you from Slack, Gmail and Calendar, sorted into **Now** (high priority or due today), **Next** (due within three days), **Later** and **Nice to Know** (FYIs that need no action). Filter by source, and anything new since you last looked gets an outline.
 
-- **Done, Snooze and Dismiss stick.** A later run never re-raises an item you handled unless it finds new activity and records why. Closed items stay one click away to reopen.
-- **Quick actions.** Runs attach up to three likely resolutions per item, such as "Decline meeting" or "Reply yes", with the message already written. A click copies the text and opens the source. Nothing is ever sent for you.
-- **Agent threads.** The robot button starts a thread that does the work up to the point of review, such as drafting the weekly update someone asked for. The card shows Working, then Ready with the thread's one-line summary.
+The board is a mirror. Pulse on the iPhone captures and owns the data; this plugin renders the snapshot the app publishes and forwards your taps back to it. Section placement follows the app's own rules, so an item appears in the same section on both screens.
+
+- **Your taps reach the phone.** Done, Snooze, Dismiss and Reopen append a command the app applies on its next pass. The row keeps its current status and gains a "Sent to iPhone" marker until the app acknowledges, because the phone owns content: a status flipped here could be wrong twice.
+- **Quick actions.** Items arrive with up to three likely resolutions, such as "Decline meeting" or "Reply yes", the message already written. A click copies the text and opens the source. Nothing is ever sent for you.
+- **Agent threads.** The robot button starts a Mac thread that does the work up to the point of review, such as drafting the weekly update someone asked for. The card shows Working, then Ready with the thread's one-line summary. These records are Mac-local and never enter the snapshot.
 
 ## How it works
 
-Pulse schedules three capture runs: Hourly (every two hours), Daily (4 PM) and Weekly (Friday 3 PM), each with its own cron. Each run sends a prompt to its own bb thread, created on the first run in a "Pulse" sidebar section. The agent reads your sources and writes items through a bundled CLI into a small local store, so the panel updates live as the run works. **Run now** and the run menu use the same path, and each schedule can be paused from the menu.
+Three files in the app's iCloud container, as `docs/DATA-CONTRACT.md` in the iOS repo specifies: the app writes `snapshot.json`, this plugin reads it and appends to `commands.jsonl`, and the app acknowledges in `commands.ack.jsonl`. The plugin watches the directory and polls every 5 seconds, reloading only when the snapshot's `generatedAt` moves, so a still phone costs nothing.
 
-Items carry stable source IDs, so a run updates an existing item instead of adding a duplicate. Agents write only through the CLI, which applies the same validation and sticky-state rules as the panel.
+The reader tells four states apart: connected, not connected (no snapshot yet, so an empty board rather than an error), error (unreadable, keeping the last good board on screen), and update (a schema version this plugin predates, which it refuses to guess at).
+
+Commands are fsynced as written and pruned once acknowledged, compacting the log past 5 MB or when every line is acked. An unacknowledged command stays in the pending count so a dropped write is visible rather than silent.
 
 ## Requirements
 
-- Your agents need their own access to Slack, Gmail and Google Calendar, through MCP servers, CLIs or other plugins. Pulse has no connectors. Describe the tools in the settings, and every run and agent prompt includes that text.
-- Pick a project for the threads in the settings. Runs call the bundled CLI from a shell, so the run thread needs permission to run commands.
-- Optional settings: your first name, house rules for runs, a model and reasoning level, cron schedules, a time zone, a store directory, and skill rules that load your installed skills into agent threads.
-- Every run is an agent turn on your provider, so it uses your model quota on each schedule.
+- Pulse on the iPhone, signed in and capturing. The plugin has no connectors of its own.
+- The mirror directory: empty to use the app's iCloud container, or a folder you sync yourself.
+- Optional: a project for agent threads (and for the legacy Mac schedules), your first name, house rules, and skill rules mapping installed skills to kinds of item.
+- Legacy: earlier versions captured on the Mac with hourly, daily and weekly runs and a `pulse` CLI over a local item store. That code is retained behind **Capture runs → This Mac**, off by default, and refuses to write while a mirror is configured.

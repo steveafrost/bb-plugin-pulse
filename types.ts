@@ -30,6 +30,12 @@ export interface PulseItem {
   agentSkills?: string[];
   /** Set when the user handed the item to an agent thread from the panel. */
   action?: PulseItemAction | null;
+  /**
+   * Transitions this Mac has queued for the iPhone but has not seen acknowledged
+   * (lib/commands.mjs). The item keeps its snapshot status; the panel shows the
+   * marker so the user knows the tap registered.
+   */
+  pending?: ItemAction[];
 }
 
 export interface QuickAction {
@@ -95,7 +101,26 @@ export interface Automation {
   pendingReload?: boolean;
 }
 
+/** What the mirror reader saw (lib/snapshot.mjs). */
+export type MirrorState = "connected" | "not-connected" | "error" | "update";
+
+export interface MirrorInfo {
+  state: MirrorState;
+  /** The resolved mirror directory. */
+  dir: string;
+  /** The snapshot file being read. */
+  file: string;
+  schemaVersion: number | null;
+  generatedAt: string | null;
+  deviceName: string | null;
+  /** Why the mirror is not connected, unreadable, or needs a newer plugin. */
+  message: string | null;
+  /** Commands queued for the iPhone that it has not acknowledged. */
+  pendingCount: number;
+}
+
 export interface PulseSnapshot {
+  /** The mirror directory (not the legacy item store). */
   home: string;
   generatedAt: string;
   lastViewedAt: string | null;
@@ -107,6 +132,8 @@ export interface PulseSnapshot {
   parentThreadId: string | null;
   /** No project is set in the plugin settings yet. */
   needsProject?: boolean;
+  /** The iPhone snapshot the panel is rendering. */
+  mirror: MirrorInfo;
 }
 
 export type ItemAction = "done" | "dismiss" | "snooze" | "reopen";

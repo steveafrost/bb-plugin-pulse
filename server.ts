@@ -1,14 +1,23 @@
 /**
  * bb-plugin-pulse — server.
  *
- * Reads the Pulse item store (lib/store.mjs, the same module the `pulse` CLI
- * uses), watches its directory and pushes a realtime signal so the panel stays
- * live while runs write. The user's actions (done / dismiss / snooze / reopen)
- * go through the store's user path, so the next run respects them.
+ * Pulse on the iPhone owns the data (pulse-ios docs/DATA-CONTRACT.md). This
+ * server reads the iOS snapshot from the mirror directory (lib/snapshot.mjs),
+ * never writes it, and forwards the panel's user actions as commands
+ * (lib/commands.mjs) for the app to apply. It watches snapshot.json and polls it
+ * every 5 s, pushing `pulse-changed` only when `generatedAt` advances.
  *
- * Pulse owns its capture runs: plugin schedules send the prompts in
- * lib/prompts.ts to one thread per run (created on first run). Run now calls
- * the same function. Everything personal lives in the plugin settings.
+ * Boundaries worth knowing:
+ *   - The mirror is the panel's only item source. `lib/store.mjs` and the `pulse`
+ *     CLI over it still work for an install that has not migrated, but nothing in
+ *     the panel's read or write path touches items.json any more.
+ *   - Capture runs are legacy: iOS captures now, so schedules are off by default
+ *     (`captureRuns: "iphone"`). The run code below is kept intact and gated by
+ *     that setting (`captureRuns: "mac"` restores the old behaviour exactly)
+ *     rather than deleted, because it is entangled with run threads, the durable
+ *     thread map and the run log the panel still displays.
+ *   - Agent threads stay: they are Mac-local activity, so their records live in
+ *     $PULSE_HOME/actions.json (lib/actions.mjs), never in the snapshot.
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -18,6 +27,14 @@ import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 // @ts-ignore -- plain ESM module shared with the CLI
 import * as storeModule from "./lib/store.mjs";
+// @ts-ignore -- plain ESM module (plain JS, no build step)
+import * as mirrorModule from "./lib/snapshot.mjs";
+// @ts-ignore -- plain ESM module
+import * as commandsModule from "./lib/commands.mjs";
+// @ts-ignore -- plain ESM module
+import * as actionsModule from "./lib/actions.mjs";
+// @ts-ignore -- plain ESM module
+import * as panelModule from "./lib/panel.mjs";
 import { nextCronRun } from "./lib/cron";
 import { DEFAULT_SOURCES, runPrompt, type PromptContext, type RunName } from "./lib/prompts";
 import { parseSkillRules, skillsFor, type SkillRef, type SkillRule } from "./lib/skills";
@@ -25,28 +42,63 @@ import { threadGone } from "./lib/thread-gone";
 import { actionPrompt, readySummary, type ActionContext } from "./lib/action";
 
 export { actionPrompt, readySummary, type ActionContext };
-import type { ActionStatus, Automation, ItemAction, PulseItem, PulseSnapshot } from "./types";
+import type { ActionStatus, Automation, ItemAction, PulseItem, PulseRun, PulseSnapshot } from "./types";
 
 type Home = string;
+/**
+ * Only the pieces of the legacy store this server still needs: home resolution
+ * and the durable run-thread map (which survives a plugin reinstall). The panel's
+ * item read and write paths are the mirror and the command writer, below.
+ */
 const store = storeModule as unknown as {
   pulseHome(): string;
-  snapshot(home: Home): Omit<PulseSnapshot, "automations" | "parentThreadId">;
-  userAction(id: string, status: string, opts: { until?: string; reason?: string; by?: string }, home: Home): PulseItem;
-  markSeen(at: string | undefined, home: Home): { lastViewedAt: string };
-  getItem(id: string, home: Home): PulseItem;
-  startAction(id: string, opts: { threadId: string; by?: string }, home: Home): PulseItem;
-  setActionStatus(id: string, status: ActionStatus, opts: { threadId?: string; summary?: string | null; by?: string }, home: Home): PulseItem | null;
-  markActionSeen(id: string, home: Home): PulseItem;
-  actionItems(status: ActionStatus | null, home: Home): PulseItem[];
+  getRunThreads(home: Home): Record<string, string>;
+  setRunThread(name: string, threadId: string | null, home: Home): Record<string, string>;
+};
+
+interface MirrorRead {
+  state: "connected" | "not-connected" | "error" | "update";
+  dir: string;
+  file: string;
+  schemaVersion: number | null;
+  generatedAt: string | null;
+  deviceName: string | null;
+  lastViewedAt: string | null;
+  items: PulseItem[];
+  runs: PulseRun[];
+  draft: PulseSnapshot["draft"];
+  message: string | null;
+}
+const mirror = mirrorModule as unknown as {
+  resolveMirrorDir(env?: NodeJS.ProcessEnv): string;
+  readSnapshot(opts?: { dir?: string }): MirrorRead;
+  createMirrorPoller(opts: { dir: string; onChange?: (result: MirrorRead) => void }): { poll(): boolean; reset(): void };
+};
+const commands = commandsModule as unknown as {
+  enqueue(input: { op: ItemAction; itemId: string; until?: string | null; reason?: string | null }, opts?: { dir?: string }): { command: unknown; queued: boolean };
+  dropAcked(opts?: { dir?: string }): { removed: number; compacted: boolean };
+  readPending(dir?: string): unknown[];
+};
+const panel = panelModule as unknown as {
+  pendingByItem(pending?: unknown[]): Map<string, ItemAction[]>;
+  actionsByItem(entries?: Array<[string, NonNullable<PulseItem["action"]>]>): Record<string, NonNullable<PulseItem["action"]>>;
+  projectItems(items: PulseItem[], opts: { actions?: Record<string, NonNullable<PulseItem["action"]>>; pending?: Map<string, ItemAction[]>; skillsFor?: ((item: PulseItem) => SkillRef[]) | null }): PulseItem[];
+};
+const actions = actionsModule as unknown as {
+  startAction(home: Home, id: string, opts: { threadId: string; at?: string }): NonNullable<PulseItem["action"]>;
+  setActionStatus(home: Home, id: string, status: ActionStatus, opts: { threadId?: string; summary?: string | null }): NonNullable<PulseItem["action"]> | null;
+  markActionSeen(home: Home, id: string): NonNullable<PulseItem["action"]> | null;
+  actionEntries(home: Home, status?: ActionStatus | null): Array<[string, NonNullable<PulseItem["action"]>]>;
 };
 
 const CHANGED = "pulse-changed";
 const RUN_NAMES: RunName[] = ["hourly", "daily", "weekly"];
 const RUN_LABEL: Record<RunName, string> = { hourly: "Hourly", daily: "Daily", weekly: "Weekly" };
 const DEFAULT_CRON: Record<RunName, string> = { hourly: "0 */2 * * *", daily: "0 16 * * *", weekly: "0 15 * * 5" };
-const STATUS_FOR: Record<ItemAction, string> = { done: "done", dismiss: "dismissed", snooze: "snoozed", reopen: "open" };
 const RECONCILE_MS = 2 * 60_000;
 const PROBE_TTL_MS = 30_000;
+/** The contract's snapshot poll cadence (DATA-CONTRACT.md, write protocol step 2). */
+const MIRROR_POLL_MS = 5_000;
 /** Plugin root (server runs from dist/server.js or ./server.ts). */
 const ROOT = (() => {
   const here = path.dirname(fileURLToPath(import.meta.url));
@@ -104,7 +156,16 @@ export default async function plugin(bb: BbPluginApi) {
     weeklyCron: { type: "string", label: "Weekly schedule (cron, server time; empty = off)", default: DEFAULT_CRON.weekly },
     section: { type: "string", label: "Sidebar section for Pulse threads (created if missing; empty = none)", default: "Pulse" },
     timeZone: { type: "string", label: "Time zone (IANA; empty = server time zone)", default: "" },
-    storeDir: { type: "string", label: "Store directory (empty = $PULSE_HOME or ~/.config/pulse)", default: "" },
+    snapshotDir: {
+      type: "string", label: "Mirror directory (empty = $PULSE_SNAPSHOT_DIR, else the Pulse iCloud folder)", default: "",
+      description: "Where Pulse on the iPhone writes snapshot.json. Leave empty to use its iCloud container, or point it at any folder that mirrors it.",
+    },
+    captureRuns: {
+      type: "select", label: "Capture runs", options: ["iphone", "mac"], default: "iphone",
+      experimental_optionLabels: { iphone: "Pulse on iPhone (recommended)", mac: "This Mac (legacy schedules)" },
+      description: "Pulse captures on the iPhone now. Mac schedules are kept for installs that still rely on them, and are off by default.",
+    },
+    storeDir: { type: "string", label: "Plugin state directory (empty = $PULSE_HOME or ~/.config/pulse)", default: "" },
     hourlyThread: { type: "string", label: "Existing thread for Hourly runs (optional thread id)", default: "" },
     dailyThread: { type: "string", label: "Existing thread for Daily runs (optional thread id)", default: "" },
     weeklyThread: { type: "string", label: "Existing thread for Weekly runs (optional thread id)", default: "" },
@@ -126,6 +187,9 @@ export default async function plugin(bb: BbPluginApi) {
       timeZone: (() => { try { new Intl.DateTimeFormat("en-US", { timeZone }); return timeZone; } catch { bb.log.warn(`bad time zone "${timeZone}"`); return systemTimeZone(); } })(),
       // Absolute, so the panel and the run's shell (which runs in the project cwd) share one store.
       home: path.resolve(os.homedir(), v.storeDir.trim().replace(/^~(?=\/|$)/, os.homedir()) || store.pulseHome()),
+      // Resolved once at load: PULSE_SNAPSHOT_DIR, then PULSE_HOME, then the app's iCloud container.
+      mirrorDir: path.resolve(os.homedir(), (v.snapshotDir ?? "").trim().replace(/^~(?=\/|$)/, os.homedir()) || mirror.resolveMirrorDir()),
+      captureOnMac: (v.captureRuns ?? "iphone") === "mac",
       threads: { hourly: v.hourlyThread.trim(), daily: v.dailyThread.trim(), weekly: v.weeklyThread.trim() } as Record<RunName, string>,
     };
   };
@@ -135,13 +199,14 @@ export default async function plugin(bb: BbPluginApi) {
   settings.onChange((next) => {
     const prev = config;
     config = readConfig(next);
-    if (config.home !== prev.home || RUN_NAMES.some((r) => config.cron[r] !== prev.cron[r])) {
-      bb.log.info("store directory or schedules changed; run `bb plugin reload` to apply");
+    if (config.home !== prev.home || config.mirrorDir !== prev.mirrorDir || RUN_NAMES.some((r) => config.cron[r] !== prev.cron[r])) {
+      bb.log.info("mirror or state directory changed; run `bb plugin reload` to apply");
     }
     publish();
   });
   fs.mkdirSync(home, { recursive: true });
-  if (!config.projectId) bb.status.needsConfiguration("Choose a project in Pulse settings, then reload the plugin.");
+  // A project is only needed for the Mac-side surfaces: legacy run threads and agent threads.
+  if (!config.projectId && config.captureOnMac) bb.status.needsConfiguration("Choose a project for Pulse's run threads, then reload the plugin.");
 
   const cliCommand = () => `PULSE_HOME=${shellQuote(home)} node ${shellQuote(path.join(ROOT, "bin/pulse.mjs"))}`;
   const promptContext = (): PromptContext => ({
@@ -241,10 +306,12 @@ export default async function plugin(bb: BbPluginApi) {
   async function loadAutomations(): Promise<Automation[]> {
     return Promise.all(
       RUN_NAMES.map(async (run) => {
-        const cron = config.cron[run];
+        // Empty while capture lives on the iPhone, so the run menu reports no schedule.
+        const cron = config.captureOnMac ? config.cron[run] : "";
         // Only the cron registered at load can fire; a changed one waits for `bb plugin reload`.
         const paused = (await bb.storage.kv.get<boolean>(pausedKey(run))) === true;
-        const pendingReload = cron !== loadedCron[run];
+        // A schedule changed in settings waits for reload — but only where a schedule exists at all.
+        const pendingReload = config.captureOnMac && cron !== loadedCron[run];
         const enabled = !paused && cron !== "" && !pendingReload;
         return {
           run, label: RUN_LABEL[run], threadId: await resolveRunThread(run), schedule: cron || null, enabled, paused, pendingReload,
@@ -332,14 +399,16 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
+  // Legacy schedules. iOS captures now, so `captureRuns: "iphone"` (the default)
+  // registers nothing. The code stays behind this gate rather than being deleted.
   for (const run of RUN_NAMES) {
-    const cron = config.cron[run];
+    const cron = config.captureOnMac ? config.cron[run] : "";
     if (!cron) continue;
     try {
       bb.background.schedule(`run-${run}`, cron, async () => {
         // The SDK can't unschedule, so a cron changed or cleared in settings leaves this job
         // registered until reload. Skip it rather than run on a cadence the user turned off.
-        if (config.cron[run] !== cron) return;
+        if (!config.captureOnMac || config.cron[run] !== cron) return;
         if ((await bb.storage.kv.get<boolean>(pausedKey(run))) === true) return;
         await startRun(run, "schedule");
       });
@@ -348,39 +417,134 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
-  async function fullSnapshot(): Promise<PulseSnapshot> {
-    const snap = store.snapshot(home);
-    // Tell the panel which skills an agent thread would load, for the robot button's tooltip.
-    const items = snap.items.map((i) => (i.status === "open" || i.status === "waiting" ? { ...i, agentSkills: skillsForItem(i).map((k) => k.name) } : i));
-    return { ...snap, items, automations: await loadAutomations(), parentThreadId: null, needsProject: !config.projectId };
+  // ---- The mirror: the panel's only item source ----
+  let current: MirrorRead = mirror.readSnapshot({ dir: config.mirrorDir });
+
+  function lastRunsFrom(runs: PulseRun[]): Record<string, PulseRun> {
+    const out: Record<string, PulseRun> = {};
+    for (const run of runs) out[run.run] = run;
+    return out;
   }
 
-  // Live updates: any write to the store dir (CLI or panel) nudges the panel.
+  async function fullSnapshot(): Promise<PulseSnapshot> {
+    // A panel fetch is also an opportunity to catch a snapshot change the watcher
+    // missed, so the next render is never stale by a whole interval.
+    refreshMirror();
+    const read = current;
+    let actionRecords: Record<string, NonNullable<PulseItem["action"]>> = {};
+    try {
+      actionRecords = panel.actionsByItem(actions.actionEntries(home));
+    } catch (error) {
+      bb.log.warn(`could not read agent actions: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    let pendingRows: unknown[] = [];
+    try {
+      pendingRows = commands.readPending(config.mirrorDir);
+    } catch (error) {
+      bb.log.warn(`could not read pending commands: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    // Items keep their snapshot status and gain a "Sent to iPhone" marker; the
+    // iPhone owns content, so the panel never flips a status it only requested.
+    const items = panel.projectItems(read.items, {
+      actions: actionRecords,
+      pending: panel.pendingByItem(pendingRows),
+      skillsFor: skillsForItem,
+    });
+    return {
+      home: read.dir,
+      generatedAt: read.generatedAt ?? new Date().toISOString(),
+      lastViewedAt: read.lastViewedAt,
+      items,
+      lastRuns: lastRunsFrom(read.runs),
+      recentRuns: read.runs.slice(-12).reverse(),
+      draft: read.draft,
+      automations: await loadAutomations(),
+      parentThreadId: null,
+      needsProject: !config.projectId,
+      mirror: {
+        state: read.state,
+        dir: read.dir,
+        file: read.file,
+        schemaVersion: read.schemaVersion,
+        generatedAt: read.generatedAt,
+        deviceName: read.deviceName,
+        message: read.message,
+        pendingCount: pendingRows.length,
+      },
+    };
+  }
+
+  // Live updates: reload only when the snapshot's identity moves.
   let publishTimer: ReturnType<typeof setTimeout> | undefined;
   const publish = () => {
     if (publishTimer) clearTimeout(publishTimer);
     publishTimer = setTimeout(() => bb.realtime.publish(CHANGED, { at: new Date().toISOString() }), 250);
   };
-  let watcher: fs.FSWatcher | undefined;
-  try {
-    watcher = fs.watch(home, { recursive: true }, (_event, file) => {
-      if (file && (String(file).endsWith(".tmp") || String(file).startsWith(".lock"))) return;
+  const poller = mirror.createMirrorPoller({
+    dir: config.mirrorDir,
+    onChange: (result) => {
+      const previous = current;
+      current = result;
+      if (result.state !== "connected" && previous.state !== result.state) {
+        bb.log.info(`pulse mirror: ${result.state}${result.message ? ` (${result.message})` : ""}`);
+      }
+      // The app acknowledged commands: drop them from the pending set, and compact
+      // the log when it has grown or every line is acked.
+      try {
+        const dropped = commands.dropAcked({ dir: config.mirrorDir });
+        if (dropped.removed) bb.log.info(`pulse mirror: ${dropped.removed} command(s) acked${dropped.compacted ? ", log compacted" : ""}`);
+      } catch (error) {
+        bb.log.warn(`could not prune acked commands: ${error instanceof Error ? error.message : String(error)}`);
+      }
       publish();
-    });
-  } catch (error) {
-    bb.log.warn(`cannot watch ${home}: ${error instanceof Error ? error.message : String(error)}`);
-  }
+    },
+  });
+  // Seed the poller's identity so the first interval tick does not re-publish.
+  poller.poll();
+
+  /** Re-read the snapshot, updating `current` only if its identity changed. */
+  const refreshMirror = () => {
+    try {
+      poller.poll();
+    } catch (error) {
+      bb.log.warn(`pulse mirror read failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  let watcher: fs.FSWatcher | undefined;
+  const watchMirror = () => {
+    try {
+      watcher = fs.watch(config.mirrorDir, (_event, file) => {
+        const name = file ? path.basename(String(file)) : "";
+        // This plugin writes the command log itself; only the snapshot and the
+        // app's ack file can change what the panel renders.
+        if (name && name !== "snapshot.json" && name !== "commands.ack.jsonl") return;
+        poller.poll();
+      });
+    } catch (error) {
+      // No mirror directory yet is the normal first-run state: the interval poll
+      // picks the snapshot up as soon as the iPhone writes it.
+      bb.log.info(`pulse mirror not watchable yet (${config.mirrorDir}): ${error instanceof Error ? error.message : String(error)}`);
+      watcher = undefined;
+    }
+  };
+  watchMirror();
+  const pollTimer = setInterval(() => {
+    if (!watcher) watchMirror();
+    refreshMirror();
+  }, MIRROR_POLL_MS);
 
   bb.rpc.register(rpcContract, {
     pulse_snapshot: () => fullSnapshot(),
     pulse_action: async ({ id, action, until }) => {
-      store.userAction(id, STATUS_FOR[action], { until, by: "user" }, home);
+      // The plugin only asserts transitions; iOS applies them and republishes.
+      const result = commands.enqueue({ op: action, itemId: id, until: until ?? null, reason: null }, { dir: config.mirrorDir });
+      if (result.queued) bb.log.info(`pulse command ${action} ${id} → ${config.mirrorDir}`);
       return fullSnapshot();
     },
-    pulse_seen: async () => {
-      store.markSeen(undefined, home);
-      return fullSnapshot();
-    },
+    // The iPhone owns lastViewedAt and there is no command for it, so "mark all
+    // seen" only clears the panel's own New markers. Nothing is written.
+    pulse_seen: async () => fullSnapshot(),
     pulse_run_now: async ({ run: name }) => ({ threadId: await startRun(name, "manual") }),
     pulse_set_run_enabled: async ({ run: name, enabled }) => {
       await bb.storage.kv.set(pausedKey(name), !enabled);
@@ -392,7 +556,7 @@ export default async function plugin(bb: BbPluginApi) {
       return { threadId, snapshot: await fullSnapshot() };
     },
     pulse_action_seen: async ({ id }) => {
-      store.markActionSeen(id, home);
+      actions.markActionSeen(home, id);
       return fullSnapshot();
     },
   });
@@ -400,8 +564,13 @@ export default async function plugin(bb: BbPluginApi) {
   // ---- Agent actions ----
   const starting = new Set<string>();
   async function startAction(id: string): Promise<string> {
-    const item = store.getItem(id, home);
-    if (item.action?.status === "running") return item.action.threadId;
+    // Look the item up in the live snapshot, not the legacy store: the iPhone is
+    // the only place item content lives now.
+    refreshMirror();
+    const item = current.items.find((i) => i.id === id);
+    if (!item) throw new Error(`No item ${id} in the current snapshot`);
+    const existing = actions.actionEntries(home).find(([itemId]) => itemId === id)?.[1];
+    if (existing?.status === "running") return existing.threadId;
     if (starting.has(id)) throw new Error("An action for this item is already starting");
     starting.add(id);
     try {
@@ -416,7 +585,12 @@ export default async function plugin(bb: BbPluginApi) {
         pluginMetadata: { pulseItemId: id },
       });
       try {
-        store.startAction(id, { threadId: thread.id, by: "user" }, home);
+        // The item must still be in the snapshot: if the app republished without it
+        // while the thread spawned, the record would point at nothing and the
+        // thread would work unseen.
+        refreshMirror();
+        if (!current.items.some((i) => i.id === id)) throw new Error(`item ${id} left the snapshot while its thread started`);
+        actions.startAction(home, id, { threadId: thread.id });
       } catch (error) {
         // Unrecorded, the thread would work unseen and the next click would spawn a second one.
         bb.log.warn(`action ${id}: could not record thread ${thread.id}; stopping and archiving it`);
@@ -462,12 +636,14 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
-  const itemForThread = (threadId: string) => store.actionItems(null, home).find((i) => i.action?.threadId === threadId);
+  const itemForThread = (threadId: string) => actions.actionEntries(home).find(([, a]) => a.threadId === threadId);
   const settle = (threadId: string, status: ActionStatus, summary?: string | null) => {
-    const item = itemForThread(threadId);
-    if (!item || item.action?.status === status) return;
-    store.setActionStatus(item.id, status, { threadId, summary, by: "pulse" }, home);
-    bb.log.info(`action ${item.id} (${threadId}) → ${status}`);
+    const entry = itemForThread(threadId);
+    if (!entry) return;
+    const [itemId, action] = entry;
+    if (action.status === status) return;
+    actions.setActionStatus(home, itemId, status, { threadId, summary });
+    bb.log.info(`action ${itemId} (${threadId}) → ${status}`);
     publish();
   };
   bb.events.on("thread.idle", ({ thread, lastAssistantText }) => settle(thread.id, "ready", readySummary(lastAssistantText)));
@@ -476,8 +652,8 @@ export default async function plugin(bb: BbPluginApi) {
 
   // Safety net for events missed while the plugin was reloading: reconcile running actions.
   async function reconcile() {
-    for (const item of store.actionItems("running", home)) {
-      const threadId = item.action!.threadId;
+    for (const [, action] of actions.actionEntries(home, "running")) {
+      const threadId = action.threadId;
       try {
         const t = await bb.sdk.threads.get({ threadId });
         if (t.deletedAt || t.archivedAt) settle(threadId, "failed", "Action thread was archived or deleted");
@@ -507,6 +683,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.onDispose(async () => {
     watcher?.close();
+    clearInterval(pollTimer);
     if (publishTimer) clearTimeout(publishTimer);
   });
 }

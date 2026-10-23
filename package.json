@@ -1,9 +1,9 @@
 {
   "name": "bb-plugin-pulse",
-  "version": "0.1.12",
+  "version": "0.2.0",
   "type": "module",
   "private": true,
-  "description": "A live board of what needs you from Slack, Gmail and Calendar, kept current by scheduled bb agent runs.",
+  "description": "A live board of what needs you, mirrored from Pulse on the iPhone: the app captures, this plugin renders the snapshot and queues your actions back to it.",
   "repository": {
     "type": "git",
     "url": "https://github.com/steveafrost/bb-plugin-pulse.git"
@@ -23,7 +23,7 @@
   },
   "bb": {
     "name": "Pulse",
-    "description": "One live board of what needs you from Slack, Gmail and Calendar. Scheduled agent runs write the items; Done and Snooze stick; quick actions copy a prepared reply; the robot hands an item to an agent thread.",
+    "description": "A live board of what needs you, mirrored from Pulse on the iPhone: the app captures, this plugin renders the snapshot and queues your actions back to it.",
     "branding": {
       "icon": "./assets/icon.svg"
     },
