@@ -32,3 +32,15 @@ test("an agent resolve is recorded as a resolved change for the Run Log", () => 
   assert.equal(it.history.at(-1).change, "resolved");
   assert.equal(it.history.at(-1).by, "daily");
 });
+
+test("reopen must be a real boolean and reason a string, so a handled item stays handled", () => {
+  const h = home();
+  store.upsert([{ id: "slack:r", title: "ok" }], "hourly", h);
+  store.userAction("slack:r", "done", {}, h);
+  for (const bad of [{ reopen: "false", reason: "x" }, { reopen: 1, reason: "x" }, { reopen: true, reason: 5 }, { reopen: true, reason: " " }, { status: "resolved", reason: { a: 1 } }, { due: 1730000000000 }]) {
+    assert.throws(() => store.upsert([{ id: "slack:r", ...bad }], "hourly", h), /must be|requires a reason/, JSON.stringify(bad));
+  }
+  assert.equal(store.getItem("slack:r", h).status, "done");
+  store.upsert([{ id: "slack:r", reopen: true, reason: "new reply" }], "hourly", h);
+  assert.equal(store.getItem("slack:r", h).status, "open");
+});
