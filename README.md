@@ -7,6 +7,8 @@ store; the panel sorts them into **Now**, **Next**, **Later** and **Nice to Know
 ![Pulse board](screenshots/board.png)
 
 [Watch the 72-second demo](https://github.com/steveafrost/bb-plugin-pulse/releases/download/v0.1.0/pulse-demo.mp4) (made-up data).
+At Shopify, [step through the interactive demo](https://pulse-demo.quick.shopify.io): the real panel with
+made-up data, in 20 chapters with a presenter view. It needs a Shopify login.
 
 - **Plugin-owned schedules.** Hourly, Daily and Weekly capture runs, each in its own thread (created
   on the first run, in a "Pulse" sidebar section). **Run now** and the run menu use the same path;
