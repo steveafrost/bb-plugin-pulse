@@ -643,7 +643,8 @@ function boardSummary(items: PulseItem[], seenRef: string | null) {
   return {
     counts,
     fresh: items.filter((i) => (i.status === "open" || i.status === "waiting") && isNew(i, seenRef)).length,
-    ready: items.filter((i) => i.action?.status === "ready" && !i.action.seenAt).length,
+    // Closed items render no action chip, so their unread action could never be cleared.
+    ready: items.filter((i) => (i.status === "open" || i.status === "waiting" || i.status === "snoozed") && i.action?.status === "ready" && !i.action.seenAt).length,
     working: items.filter((i) => i.action?.status === "running").length,
   };
 }

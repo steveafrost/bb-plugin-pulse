@@ -15,7 +15,9 @@ function field(spec: string, min: number, max: number): Set<number> {
       lo = Number(a);
       hi = b !== undefined ? Number(b) : stepText ? max : lo;
     }
-    for (let v = lo; v <= hi; v += step) out.add(v);
+    // Free-form settings: a zero, negative or non-numeric step would never advance.
+    if (!Number.isInteger(step) || step < 1 || !Number.isInteger(lo) || !Number.isInteger(hi)) return new Set();
+    for (let v = Math.max(lo, min); v <= Math.min(hi, max); v += step) out.add(v);
   }
   return out;
 }

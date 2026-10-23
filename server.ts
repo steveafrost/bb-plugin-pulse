@@ -183,6 +183,7 @@ export default async function plugin(bb: BbPluginApi) {
   };
   let config = readConfig(await settings.get());
   const home = config.home;
+  const loadedCron = { ...config.cron };
   settings.onChange((next) => {
     const prev = config;
     config = readConfig(next);
@@ -280,7 +281,8 @@ export default async function plugin(bb: BbPluginApi) {
     return Promise.all(
       RUN_NAMES.map(async (run) => {
         const cron = config.cron[run];
-        const enabled = (await bb.storage.kv.get<boolean>(pausedKey(run))) !== true && cron !== "";
+        // Only the cron registered at load can fire; a changed one waits for `bb plugin reload`.
+        const enabled = (await bb.storage.kv.get<boolean>(pausedKey(run))) !== true && cron !== "" && cron === loadedCron[run];
         return { run, label: RUN_LABEL[run], threadId: await resolveRunThread(run), schedule: cron || null, enabled, nextRunAt: enabled ? nextCronRun(cron)?.toISOString() ?? null : null };
       }),
     );
@@ -369,6 +371,9 @@ export default async function plugin(bb: BbPluginApi) {
     if (!cron) continue;
     try {
       bb.background.schedule(`run-${run}`, cron, async () => {
+        // The SDK can't unschedule, so a cron changed or cleared in settings leaves this job
+        // registered until reload. Skip it rather than run on a cadence the user turned off.
+        if (config.cron[run] !== cron) return;
         if ((await bb.storage.kv.get<boolean>(pausedKey(run))) === true) return;
         await startRun(run, "schedule");
       });

@@ -19,3 +19,14 @@ test("skill rules parse, skip bad lines and only suggest installed skills", () =
   const item = { kind: "reply", title: "t", detail: "", url: null, id: "slack:x", people: [] } as never;
   assert.deepEqual(skillsFor(item, rules), []);
 });
+
+test("zero, negative and junk steps return no run instead of hanging", () => {
+  const from = new Date(2026, 9, 16, 17, 10);
+  for (const expr of ["*/0 * * * *", "*/-5 * * * *", "*/x * * * *", "0 */0 * * *", "0-99999999 * * * *"]) {
+    const started = Date.now();
+    const next = nextCronRun(expr, from);
+    assert.ok(Date.now() - started < 1000, expr);
+    if (expr.startsWith("0-")) assert.deepEqual(next, new Date(2026, 9, 16, 17, 11));
+    else assert.equal(next, null, expr);
+  }
+});

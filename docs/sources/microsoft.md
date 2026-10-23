@@ -10,7 +10,7 @@ Corrections welcome.
 ## Install
 
 ```sh
-npm install -g msteams-mcp
+npm install -g msteams-mcp@0.30.2
 ```
 
 This installs `msteams`, which exposes `login`, `status`, `me`, `search`, `thread`, `channel`,
