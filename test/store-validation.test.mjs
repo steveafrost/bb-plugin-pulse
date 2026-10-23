@@ -44,3 +44,13 @@ test("reopen must be a real boolean and reason a string, so a handled item stays
   store.upsert([{ id: "slack:r", reopen: true, reason: "new reply" }], "hourly", h);
   assert.equal(store.getItem("slack:r", h).status, "open");
 });
+
+test("run logs need a string summary, and malformed records already on disk are skipped", () => {
+  const h = home();
+  assert.throws(() => store.logRun({ run: "hourly", summary: true }, h), /summary is required/);
+  assert.throws(() => store.logRun({ run: "hourly", summary: "  " }, h), /summary is required/);
+  assert.throws(() => store.logRun({ run: true, summary: "ok" }, h), /run name is required/);
+  store.logRun({ run: "hourly", summary: "good" }, h);
+  fs.appendFileSync(path.join(h, "runs.jsonl"), JSON.stringify({ run: "hourly", summary: true, finishedAt: new Date().toISOString() }) + "\nnot json\n");
+  assert.deepEqual(store.readRuns(h).map((r) => r.summary), ["good"]);
+});
