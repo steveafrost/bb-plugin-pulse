@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-23T18:04:11.000Z",
+  "deviceName": "Steve's iPhone",
+  "lastViewedAt": "2026-10-23T17:40:00.000Z",
+  "items": [
+    {
+      "id": "calendar:event:ABC-123",
+      "source": "calendar",
+      "kind": "conflict",
+      "title": "Standup overlaps Design review",
+      "detail": "Two accepted events overlap by 12 minutes.\nPick one.",
+      "url": "https://calendar.example.com/event/ABC-123",
+      "due": "2026-10-23T18:04:11.123Z",
+      "priority": "high",
+      "people": ["Ada Lovelace", "Grace Hopper"],
+      "status": "waiting",
+      "snoozedUntil": "2026-10-24T09:00:00.001Z",
+      "resolution": "Moved Design review",
+      "firstSeenAt": "2026-10-20T07:15:00.250Z",
+      "lastSeenAt": "2026-10-23T17:59:59.999Z",
+      "updatedAt": "2026-10-23T18:00:00.000Z",
+      "resolvedAt": "2026-10-22T11:11:11.111Z",
+      "lastChangedBy": "capture",
+      "history": [
+        { "at": "2026-10-20T07:15:00.250Z", "by": "morning", "change": "created" },
+        { "at": "2026-10-22T11:11:11.111Z", "by": "user", "change": "snoozed", "reason": "after standup", "until": "2026-10-23T09:00:00.000Z" }
+      ],
+      "quickActions": [
+        { "label": "Decline", "text": "I cannot make this one." },
+        { "label": "Open event", "url": "https://calendar.example.com/e/1" },
+        { "label": "Both", "text": "note", "url": "https://example.com/x" }
+      ],
+      "agentSkills": ["calendar-triage", "conflict-resolve"],
+      "action": {
+        "threadId": "thr_abc123",
+        "status": "ready",
+        "startedAt": "2026-10-23T18:01:00.000Z",
+        "finishedAt": "2026-10-23T18:03:30.500Z",
+        "summary": "Ready: drafted a decline note",
+        "seenAt": "2026-10-23T18:04:00.000Z"
+      }
+    },
+    { "id": "calendar:event:now-high", "source": "calendar", "kind": "deadline", "title": "High priority", "detail": "", "url": null, "due": null, "priority": "high", "people": [], "status": "open", "snoozedUntil": null, "resolution": null, "firstSeenAt": "2026-10-23T08:00:00.000Z", "lastSeenAt": "2026-10-23T08:00:00.000Z", "updatedAt": "2026-10-23T08:00:00.000Z", "resolvedAt": null, "lastChangedBy": "capture", "history": [], "quickActions": [] },
+    { "id": "calendar:event:due-past", "source": "calendar", "kind": "deadline", "title": "Overdue", "detail": "", "url": null, "due": "2026-10-20T09:00:00.000Z", "priority": "normal", "people": [], "status": "open", "snoozedUntil": null, "resolution": null, "firstSeenAt": "2026-10-20T08:00:00.000Z", "lastSeenAt": "2026-10-20T08:00:00.000Z", "updatedAt": "2026-10-20T08:00:00.000Z", "resolvedAt": null, "lastChangedBy": "capture", "history": [], "quickActions": [] },
+    { "id": "calendar:event:next", "source": "calendar", "kind": "deadline", "title": "Tomorrow", "detail": "", "url": null, "due": "2026-10-24T09:00:00.000Z", "priority": "normal", "people": [], "status": "open", "snoozedUntil": null, "resolution": null, "firstSeenAt": "2026-10-23T08:00:00.000Z", "lastSeenAt": "2026-10-23T08:00:00.000Z", "updatedAt": "2026-10-23T08:00:00.000Z", "resolvedAt": null, "lastChangedBy": "capture", "history": [], "quickActions": [] },
+    { "id": "calendar:event:later", "source": "calendar", "kind": "deadline", "title": "Next month", "detail": "", "url": null, "due": "2026-11-20T09:00:00.000Z", "priority": "normal", "people": [], "status": "open", "snoozedUntil": null, "resolution": null, "firstSeenAt": "2026-10-23T08:00:00.000Z", "lastSeenAt": "2026-10-23T08:00:00.000Z", "updatedAt": "2026-10-23T08:00:00.000Z", "resolvedAt": null, "lastChangedBy": "capture", "history": [], "quickActions": [] },
+    { "id": "calendar:event:fyi", "source": "calendar", "kind": "fyi", "title": "FYI", "detail": "", "url": null, "due": "2026-10-20T09:00:00.000Z", "priority": "low", "people": [], "status": "open", "snoozedUntil": null, "resolution": null, "firstSeenAt": "2026-10-23T08:00:00.000Z", "lastSeenAt": "2026-10-23T08:00:00.000Z", "updatedAt": "2026-10-23T08:00:00.000Z", "resolvedAt": null, "lastChangedBy": "capture", "history": [], "quickActions": [] },
+    { "id": "calendar:event:done", "source": "calendar", "kind": "deadline", "title": "Already done", "detail": "", "url": null, "due": "2026-10-22T09:00:00.000Z", "priority": "high", "people": [], "status": "done", "snoozedUntil": null, "resolution": null, "firstSeenAt": "2026-10-22T08:00:00.000Z", "lastSeenAt": "2026-10-22T08:00:00.000Z", "updatedAt": "2026-10-22T08:00:00.000Z", "resolvedAt": "2026-10-22T09:00:00.000Z", "lastChangedBy": "user", "history": [], "quickActions": [] }
+  ],
+  "runs": [
+    { "run": "capture", "startedAt": "2026-10-23T18:04:00.000Z", "finishedAt": "2026-10-23T18:04:11.000Z", "summary": "6 items, 1 conflict", "thread": null, "sources": ["calendar"], "errors": [] }
+  ],
+  "draft": null
+}

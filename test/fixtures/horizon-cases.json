@@ -1,0 +1,22 @@
+{
+  "at": "2026-10-23T12:00:00.000Z",
+  "note": "Shared with PulseCore/Tests/PulseCoreTests/HorizonTests.swift. Same inputs, same expected buckets on both sides.",
+  "cases": [
+    { "id": "high-no-due", "kind": "deadline", "priority": "high", "due": null, "status": "open", "expect": "now" },
+    { "id": "high-far-due", "kind": "deadline", "priority": "high", "due": "2027-01-01T00:00:00.000Z", "status": "open", "expect": "now" },
+    { "id": "due-earlier-today", "kind": "deadline", "priority": "normal", "due": "2026-10-23T09:00:00.000Z", "status": "open", "expect": "now" },
+    { "id": "due-later-today", "kind": "deadline", "priority": "normal", "due": "2026-10-23T23:59:00.000Z", "status": "open", "expect": "now" },
+    { "id": "overdue", "kind": "deadline", "priority": "normal", "due": "2026-10-20T09:00:00.000Z", "status": "open", "expect": "now" },
+    { "id": "tomorrow", "kind": "deadline", "priority": "normal", "due": "2026-10-24T09:00:00.000Z", "status": "open", "expect": "next" },
+    { "id": "plus-three-days", "kind": "deadline", "priority": "normal", "due": "2026-10-26T09:00:00.000Z", "status": "open", "expect": "next" },
+    { "id": "plus-four-days", "kind": "deadline", "priority": "normal", "due": "2026-10-27T09:00:00.000Z", "status": "open", "expect": "later" },
+    { "id": "far", "kind": "deadline", "priority": "normal", "due": "2026-12-01T09:00:00.000Z", "status": "open", "expect": "later" },
+    { "id": "no-due", "kind": "deadline", "priority": "normal", "due": null, "status": "open", "expect": "later" },
+    { "id": "fyi", "kind": "fyi", "priority": "normal", "due": null, "status": "open", "expect": "info" },
+    { "id": "fyi-high", "kind": "fyi", "priority": "high", "due": null, "status": "open", "expect": "info" },
+    { "id": "fyi-overdue", "kind": "fyi", "priority": "normal", "due": "2026-10-20T09:00:00.000Z", "status": "open", "expect": "info" },
+    { "id": "closed-done", "kind": "deadline", "priority": "high", "due": null, "status": "done", "expect": null },
+    { "id": "closed-dismissed", "kind": "deadline", "priority": "normal", "due": null, "status": "dismissed", "expect": null },
+    { "id": "closed-resolved", "kind": "deadline", "priority": "normal", "due": null, "status": "resolved", "expect": null }
+  ]
+}
