@@ -11,6 +11,7 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import type { Automation, ItemAction, PulseHistoryEntry, PulseItem, PulseRun, PulseSnapshot, QuickAction, Source } from "./types";
+import { horizonOf, type Horizon } from "./lib/horizon";
 import "./app.css";
 
 const SOURCE_LABEL: Record<Source, string> = { slack: "Slack", gmail: "Email", calendar: "Calendar", github: "GitHub", docs: "Docs", other: "Other" };
@@ -313,28 +314,9 @@ function Section({ title, count, children, collapsible = false, defaultOpen = tr
   );
 }
 
-type Horizon = "now" | "next" | "later" | "info";
-
-/**
- * Nice to Know: kind "fyi" — informational, no action needed.
- * Now: high priority, overdue, or due by end of today.
- * Next: due by end of tomorrow, or normal priority with no date.
- * Later: low priority, due after tomorrow, waiting on others, or snoozed.
- */
-function horizonOf(item: PulseItem): Horizon {
-  if (item.kind === "fyi") return "info";
-  if (item.status === "waiting" || item.status === "snoozed") return "later";
-  const dayMs = 86_400_000;
-  const endToday = startOfDay(new Date()) + dayMs;
-  const due = item.due ? Date.parse(item.due) : NaN;
-  if (item.priority === "high" || (Number.isFinite(due) && due < endToday)) return "now";
-  if (Number.isFinite(due)) return due < endToday + dayMs ? "next" : "later";
-  return item.priority === "low" ? "later" : "next";
-}
-
 const HORIZONS: { key: Horizon; title: string; hint: string; empty: string }[] = [
   { key: "now", title: "Now", hint: "High priority or due today", empty: "Nothing urgent." },
-  { key: "next", title: "Next", hint: "Due tomorrow or open with no date", empty: "Nothing queued." },
+  { key: "next", title: "Next", hint: "Due tomorrow, open with no date, or parked a few days", empty: "Nothing queued." },
   { key: "later", title: "Later", hint: "Low priority, further out, waiting on others or snoozed", empty: "Nothing parked." },
   { key: "info", title: "Nice to Know", hint: "FYIs, no action needed", empty: "No FYIs." },
 ];
