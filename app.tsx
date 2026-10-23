@@ -12,6 +12,7 @@ import {
 import type { rpcContract } from "./server";
 import type { Automation, ItemAction, PulseHistoryEntry, PulseItem, PulseRun, PulseSnapshot, QuickAction, Source } from "./types";
 import { horizonOf, type Horizon } from "./lib/horizon";
+import { runEffects } from "./lib/run-effects";
 import "./app.css";
 
 const SOURCE_LABEL: Record<Source, string> = { slack: "Slack", gmail: "Email", calendar: "Calendar", github: "GitHub", docs: "Docs", other: "Other" };
@@ -554,23 +555,6 @@ function ClosedPopover({ items, onReopen, onBack }: { items: PulseItem[]; onReop
       ) : <p className="pulse-pop__empty">Nothing closed in the last 3 days.</p>}
     </>
   );
-}
-
-/** Items whose history records this run creating or resolving them, between its previous run and this one. */
-function runEffects(run: PulseRun, runs: PulseRun[], items: PulseItem[]) {
-  const prev = runs.find((r) => r.run === run.run && r.finishedAt < run.finishedAt);
-  const from = run.startedAt ?? run.previousFinishedAt ?? prev?.finishedAt ?? "";
-  const added: PulseItem[] = [];
-  const resolved: PulseItem[] = [];
-  for (const i of items) {
-    for (const h of i.history ?? []) {
-      if (h.by !== run.run || h.at <= from || h.at > run.finishedAt) continue;
-      if (h.change === "created") added.push(i);
-      // 0.1.6 and earlier recorded an agent resolve as a plain "status" change.
-      else if (/resolved/.test(h.change) || (/(^|,)status(,|$)/.test(h.change) && i.status === "resolved")) resolved.push(i);
-    }
-  }
-  return { added: [...new Set(added)], resolved: [...new Set(resolved)] };
 }
 
 function RunLogPopover({ snapshot, onOpenThread }: { snapshot: PulseSnapshot; onOpenThread: (id: string) => void }) {
