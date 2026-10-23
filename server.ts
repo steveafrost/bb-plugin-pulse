@@ -11,6 +11,7 @@
  * the same function. Everything personal lives in the plugin settings.
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
@@ -177,7 +178,8 @@ export default async function plugin(bb: BbPluginApi) {
       cron: { hourly: v.hourlyCron.trim(), daily: v.dailyCron.trim(), weekly: v.weeklyCron.trim() } as Record<RunName, string>,
       section: v.section.trim(),
       timeZone: (() => { try { new Intl.DateTimeFormat("en-US", { timeZone }); return timeZone; } catch { bb.log.warn(`bad time zone "${timeZone}"`); return systemTimeZone(); } })(),
-      home: v.storeDir.trim().replace(/^~(?=\/|$)/, process.env.HOME ?? "~") || store.pulseHome(),
+      // Absolute, so the panel and the run's shell (which runs in the project cwd) share one store.
+      home: path.resolve(os.homedir(), v.storeDir.trim().replace(/^~(?=\/|$)/, os.homedir()) || store.pulseHome()),
       threads: { hourly: v.hourlyThread.trim(), daily: v.dailyThread.trim(), weekly: v.weeklyThread.trim() } as Record<RunName, string>,
     };
   };

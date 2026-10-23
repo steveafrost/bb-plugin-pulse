@@ -22,3 +22,13 @@ test("still accepts null detail and url", () => {
   store.upsert([{ id: "gmail:y", title: "ok", detail: null, url: null, people: ["Ana"] }], "hourly", h);
   assert.equal(store.listItems({ statuses: ["open"] }, h).length, 1);
 });
+
+test("an agent resolve is recorded as a resolved change for the Run Log", () => {
+  const h = home();
+  store.upsert([{ id: "slack:z", title: "ok" }], "hourly", h);
+  const out = store.upsert([{ id: "slack:z", status: "resolved", reason: "answered" }], "daily", h);
+  assert.deepEqual(out.resolved, ["slack:z"]);
+  const it = store.getItem("slack:z", h);
+  assert.equal(it.history.at(-1).change, "resolved");
+  assert.equal(it.history.at(-1).by, "daily");
+});

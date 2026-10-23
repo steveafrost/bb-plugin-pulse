@@ -557,7 +557,8 @@ function runEffects(run: PulseRun, runs: PulseRun[], items: PulseItem[]) {
     for (const h of i.history ?? []) {
       if (h.by !== run.run || h.at <= from || h.at > run.finishedAt) continue;
       if (h.change === "created") added.push(i);
-      else if (/resolved/.test(h.change)) resolved.push(i);
+      // 0.1.6 and earlier recorded an agent resolve as a plain "status" change.
+      else if (/resolved/.test(h.change) || (/(^|,)status(,|$)/.test(h.change) && i.status === "resolved")) resolved.push(i);
     }
   }
   return { added: [...new Set(added)], resolved: [...new Set(resolved)] };
