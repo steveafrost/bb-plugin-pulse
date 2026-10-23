@@ -53,7 +53,7 @@ Agent commands
 User commands (panel)
   pulse done|dismiss <id> [--reason ...]    pulse snooze <id> --until <ISO>    pulse reopen <id>
   pulse seen [--at <ISO>]    pulse show <id>   (first line: agent action status/thread when one was started)
-  The panel's "Action with agent" button starts a child thread of the Pulse thread for an item and
+  The panel's robot button starts an agent thread for an item in the Pulse project and
   records item.action = { threadId, status: running|ready|failed, startedAt, finishedAt, summary, seenAt }.
 `;
 

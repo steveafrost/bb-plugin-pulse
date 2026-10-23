@@ -89,6 +89,10 @@ export interface Automation {
   schedule: string | null;
   nextRunAt: string | null;
   enabled: boolean | null;
+  /** Paused from the panel (kv flag), independent of the schedule setting. */
+  paused?: boolean;
+  /** The schedule setting changed since load; only `bb plugin reload` applies it. */
+  pendingReload?: boolean;
 }
 
 export interface PulseSnapshot {

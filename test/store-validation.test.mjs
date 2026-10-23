@@ -80,3 +80,12 @@ test("recent runs know when the previous same-name run finished, even outside th
   assert.equal(w2.previousFinishedAt, store.readRuns(h)[0].finishedAt);
   assert.equal(runs.find((r) => r.summary === "h0"), undefined);
 });
+
+test("item urls must be web links, since the panel renders them as links", () => {
+  const h = home();
+  for (const url of ["javascript:alert(1)", "data:text/html,x", "file:///etc/passwd", "slack.com/x"]) {
+    assert.throws(() => store.upsert([{ id: "slack:u", source: "slack", kind: "reply", title: "T", url }], "hourly", h), /url must be an http\(s\) URL/);
+  }
+  store.upsert([{ id: "slack:u", source: "slack", kind: "reply", title: "T", url: "https://x.slack.com/archives/C1/p1" }], "hourly", h);
+  store.upsert([{ id: "slack:v", source: "slack", kind: "reply", title: "T", url: "http://example.com" }], "hourly", h);
+});

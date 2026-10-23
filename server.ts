@@ -22,6 +22,9 @@ import { nextCronRun } from "./lib/cron";
 import { DEFAULT_SOURCES, runPrompt, type PromptContext, type RunName } from "./lib/prompts";
 import { parseSkillRules, skillsFor, type SkillRef, type SkillRule } from "./lib/skills";
 import { threadGone } from "./lib/thread-gone";
+import { actionPrompt, readySummary, type ActionContext } from "./lib/action";
+
+export { actionPrompt, readySummary, type ActionContext };
 import type { ActionStatus, Automation, ItemAction, PulseItem, PulseSnapshot } from "./types";
 
 type Home = string;
@@ -43,6 +46,7 @@ const RUN_LABEL: Record<RunName, string> = { hourly: "Hourly", daily: "Daily", w
 const DEFAULT_CRON: Record<RunName, string> = { hourly: "0 */2 * * *", daily: "0 16 * * *", weekly: "0 15 * * 5" };
 const STATUS_FOR: Record<ItemAction, string> = { done: "done", dismiss: "dismissed", snooze: "snoozed", reopen: "open" };
 const RECONCILE_MS = 2 * 60_000;
+const PROBE_TTL_MS = 30_000;
 /** Plugin root (server runs from dist/server.js or ./server.ts). */
 const ROOT = (() => {
   const here = path.dirname(fileURLToPath(import.meta.url));
@@ -51,64 +55,6 @@ const ROOT = (() => {
 
 const systemTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 const shellQuote = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
-
-export interface ActionContext { user: string; sources: string; timeZone: string; skills: SkillRef[] }
-
-/** The prompt an action thread starts with: the item's full context plus hard no-send rules. */
-export function actionPrompt(item: PulseItem, c: ActionContext): string {
-  const { user: u, skills } = c;
-  const fmtTime = (iso: string | null) =>
-    iso ? new Date(iso).toLocaleString("en-US", { timeZone: c.timeZone, dateStyle: "medium", timeStyle: "short" }) : "none";
-  const history = (item.history ?? []).slice(-15)
-    .map((h) => `- ${fmtTime(h.at)} · ${h.by}: ${h.change}${h.until ? ` until ${fmtTime(h.until)}` : ""}${h.reason ? ` (${h.reason})` : ""}`)
-    .join("\n") || "- (none)";
-  return [
-    `${u} clicked "Start agent thread" on this Pulse item. Do the work ${u} would otherwise do, up to the point where ${u} only has to review and send.`,
-    "",
-    "## Item",
-    `- Title: ${item.title}`,
-    `- Detail: ${item.detail || "(none)"}`,
-    `- Kind: ${item.kind} · Source: ${item.source} · Priority: ${item.priority} · Status: ${item.status}`,
-    `- Link: ${item.url ?? "(none)"}`,
-    `- People: ${item.people.length ? item.people.join(", ") : "(none)"}`,
-    `- Due: ${fmtTime(item.due)}`,
-    `- Pulse id: ${item.id} (first seen ${fmtTime(item.firstSeenAt)})`,
-    "",
-    "## History",
-    history,
-    "",
-    "## Skills",
-    ...(skills.length
-      ? ["Read each of these SKILL.md files before starting and follow them:", ...skills.map((k) => `- ${k.name} (${k.why}): ${k.path}`)]
-      : ["- None preselected."]),
-    "- If the work turns out to need another installed skill, load it too.",
-    "",
-    "## How to work",
-    "- Read the source first (the link above) so you have the full ask, then gather what the work needs.",
-    `- Reaching sources: ${c.sources.trim()}`,
-    `- Example: for "send X a weekly sync of what I did", gather the last week of ${u}'s work from Slack, Gmail, Calendar and code hosting, then draft the update here.`,
-    "- If the item is marked TEST, do exactly what its detail says and nothing else; use no tools.",
-    "",
-    "## Hard rules",
-    "- NEVER send messages or emails, and never post, comment, react, or reply anywhere.",
-    "- NEVER create Slack or Gmail drafts, calendar events, or any other artifact in an external system.",
-    "- Do not change Pulse item state (no `pulse done/dismiss/snooze`).",
-    `- The result is a draft or answer in THIS thread for ${u} to review. If something blocks you, say what and stop.`,
-    "",
-    `End your final message with one line: \`Ready: <one-line summary of what is ready for ${u}>\`.`,
-  ].join("\n");
-}
-
-/** The thread's closing "Ready: …" line, else the first line of its last message. */
-function readySummary(text: string | null | undefined): string | null {
-  if (!text) return null;
-  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const m = /^[*_`>\s]*Ready:?[*_`]*\s*(.+?)[*_`]*$/i.exec(lines[i]!);
-    if (m) return m[1]!.slice(0, 240);
-  }
-  return lines[0] ? lines[0].slice(0, 240) : null;
-}
 
 export const rpcContract = defineRpcContract({
   pulse_snapshot: { input: z.null(), output: z.any() },
@@ -153,7 +99,7 @@ export default async function plugin(bb: BbPluginApi) {
       experimental_optionLabels: { default: "Thread default" }, default: "default",
       description: "Runs call the Pulse CLI from a shell, so they need permission to run commands.",
     },
-    hourlyCron: { type: "string", label: "Hourly schedule (cron, server time; empty = off)", default: DEFAULT_CRON.hourly },
+    hourlyCron: { type: "string", label: "Hourly schedule (cron, server time; empty = off)", description: "The default runs every 2 hours.", default: DEFAULT_CRON.hourly },
     dailyCron: { type: "string", label: "Daily schedule (cron, server time; empty = off)", default: DEFAULT_CRON.daily },
     weeklyCron: { type: "string", label: "Weekly schedule (cron, server time; empty = off)", default: DEFAULT_CRON.weekly },
     section: { type: "string", label: "Sidebar section for Pulse threads (created if missing; empty = none)", default: "Pulse" },
@@ -266,12 +212,25 @@ export default async function plugin(bb: BbPluginApi) {
    * dead cached id from storage — only the run path does that; a panel refresh must not mutate
    * state, and an inconclusive probe leaves the id alone so a flaky call cannot churn threads.
    */
+  /**
+   * Panel snapshots probe every run thread, and the panel refetches on each store write, so a
+   * capture run would otherwise cost several thread lookups per item it writes. Snapshots reuse a
+   * probe for PROBE_TTL_MS; the run path always probes fresh before it sends.
+   */
+  const probeCache = new Map<string, { at: number; state: "ok" | "dead" | "unknown" }>();
+  const probe = async (id: string, fresh: boolean) => {
+    const hit = probeCache.get(id);
+    if (!fresh && hit && Date.now() - hit.at < PROBE_TTL_MS) return hit.state;
+    const state = await probeRunThread(id);
+    probeCache.set(id, { at: Date.now(), state });
+    return state;
+  };
   const resolveRunThread = async (name: RunName, { prune = false } = {}): Promise<string | null> => {
     const pinned = config.threads[name];
-    if (pinned && (await probeRunThread(pinned)) !== "dead") return pinned;
+    if (pinned && (await probe(pinned, prune)) !== "dead") return pinned;
     const cached = await storedRunThread(name);
     if (!cached) return null;
-    const state = await probeRunThread(cached);
+    const state = await probe(cached, prune);
     if (state !== "dead") return cached;
     if (!prune) return null;
     bb.log.warn(`${name} run thread ${cached} is archived or gone; starting a new one`);
@@ -284,8 +243,13 @@ export default async function plugin(bb: BbPluginApi) {
       RUN_NAMES.map(async (run) => {
         const cron = config.cron[run];
         // Only the cron registered at load can fire; a changed one waits for `bb plugin reload`.
-        const enabled = (await bb.storage.kv.get<boolean>(pausedKey(run))) !== true && cron !== "" && cron === loadedCron[run];
-        return { run, label: RUN_LABEL[run], threadId: await resolveRunThread(run), schedule: cron || null, enabled, nextRunAt: enabled ? nextCronRun(cron)?.toISOString() ?? null : null };
+        const paused = (await bb.storage.kv.get<boolean>(pausedKey(run))) === true;
+        const pendingReload = cron !== loadedCron[run];
+        const enabled = !paused && cron !== "" && !pendingReload;
+        return {
+          run, label: RUN_LABEL[run], threadId: await resolveRunThread(run), schedule: cron || null, enabled, paused, pendingReload,
+          nextRunAt: enabled ? nextCronRun(cron)?.toISOString() ?? null : null,
+        };
       }),
     );
   }
@@ -451,7 +415,15 @@ export default async function plugin(bb: BbPluginApi) {
         prompt: actionPrompt(item, { user: config.user, sources: config.sources, timeZone: config.timeZone, skills: skillsForItem(item) }),
         pluginMetadata: { pulseItemId: id },
       });
-      store.startAction(id, { threadId: thread.id, by: "user" }, home);
+      try {
+        store.startAction(id, { threadId: thread.id, by: "user" }, home);
+      } catch (error) {
+        // Unrecorded, the thread would work unseen and the next click would spawn a second one.
+        bb.log.warn(`action ${id}: could not record thread ${thread.id}; stopping and archiving it`);
+        await bb.sdk.threads.stop({ threadId: thread.id }).catch(() => undefined);
+        await bb.sdk.threads.archive({ threadId: thread.id }).catch((e) => bb.log.warn(`archive ${thread.id}: ${e instanceof Error ? e.message : String(e)}`));
+        throw new Error(`Couldn't record the agent thread, so it was stopped: ${error instanceof Error ? error.message : String(error)}`);
+      }
       await notifyOnFinish(thread.id);
       bb.log.info(`action ${id} → ${thread.id}`);
       return thread.id;

@@ -81,6 +81,13 @@ function snoozeOptions(): { label: string; until: string }[] {
   return opts.map((o) => ({ label: o.label, until: o.until.toISOString() }));
 }
 
+/** Only web links reach an href; items written before 0.1.11 were not checked. */
+function webUrl(url: string | null | undefined): string | undefined {
+  return typeof url === "string" && /^https?:\/\//i.test(url) ? url : undefined;
+}
+
+const isPaused = (a: Automation) => a.paused ?? a.enabled === false;
+
 function inlineCode(text: string): React.ReactNode[] {
   return text.split(/(`[^`]+`)/g).map((part, i) =>
     part.length > 2 && part.startsWith("`") && part.endsWith("`") ? <code key={i} className="pulse-code">{part.slice(1, -1)}</code> : part,
@@ -222,7 +229,7 @@ function QuickMenu({ item }: { item: PulseItem }) {
       {open ? (
         <div className="pulse-menu__list pulse-quick" role="menu" aria-label="Quick actions">
           {actions.map((a, i) => {
-            const url = a.url ?? item.url ?? undefined;
+            const url = webUrl(a.url ?? item.url);
             const hint = [a.text ? "Copy text" : null, url ? `open ${destination(url)}` : null].filter(Boolean).join(", ");
             const body = (
               <>
@@ -255,7 +262,7 @@ function ItemRow({ item, fresh, compact = false, onAction, onStartAction, onOpen
       aria-label={fresh ? `New: ${item.title}` : undefined}>
       <div className="pulse-item__body">
         <div className="pulse-item__title">
-          {item.url ? <UrlLink href={item.url} className="pulse-link">{inlineCode(item.title)}</UrlLink> : <span>{inlineCode(item.title)}</span>}
+          {webUrl(item.url) ? <UrlLink href={webUrl(item.url)!} className="pulse-link">{inlineCode(item.title)}</UrlLink> : <span>{inlineCode(item.title)}</span>}
         </div>
         {item.detail ? <div className="pulse-item__detail">{inlineCode(item.detail)}</div> : null}
         <div className="pulse-item__meta">
@@ -371,13 +378,15 @@ function CaptureControl({ snapshot, capturing, onCapture, onRun, onToggle, onOpe
                   <span className="pulse-runs-menu__name">{a.label}{r?.errors.length ? <span className="pulse-capture--warn"> · errors</span> : null}</span>
                   <span className="pulse-faint pulse-runs-menu__meta">
                     {r ? `ran ${ago(r.finishedAt)}` : "no runs yet"}
-                    {a.enabled === false ? " · paused" : next ? ` · next ${next.text}` : ""}
+                    {a.pendingReload ? " · reload the plugin to apply the new schedule" : !a.schedule ? " · off" : isPaused(a) ? " · paused" : next ? ` · next ${next.text}` : ""}
                   </span>
                 </button>
-                <button type="button" role="menuitem" className="pulse-btn pulse-btn--small pulse-btn--quiet" onClick={() => onToggle(a)}
-                  data-tip={a.enabled === false ? `Resume the ${a.label.toLowerCase()} schedule` : `Pause the ${a.label.toLowerCase()} schedule`}>
-                  {a.enabled === false ? "Resume" : "Pause"}
-                </button>
+                {a.pendingReload || !a.schedule ? null : (
+                  <button type="button" role="menuitem" className="pulse-btn pulse-btn--small pulse-btn--quiet" onClick={() => onToggle(a)}
+                    data-tip={isPaused(a) ? `Resume the ${a.label.toLowerCase()} schedule` : `Pause the ${a.label.toLowerCase()} schedule`}>
+                    {isPaused(a) ? "Resume" : "Pause"}
+                  </button>
+                )}
                 <button type="button" role="menuitem" className="pulse-btn pulse-btn--small" onClick={() => { setOpen(false); onRun(a); }}>Run</button>
               </div>
             );
@@ -518,7 +527,7 @@ function ClosedPopover({ items, onReopen, onBack }: { items: PulseItem[]; onReop
           ) : null}
           <HistoryList history={item.history ?? []} />
           <div className="pulse-pop__actions">
-            {item.url ? <UrlLink href={item.url} className="pulse-btn">Open source</UrlLink> : null}
+            {webUrl(item.url) ? <UrlLink href={webUrl(item.url)!} className="pulse-btn">Open source</UrlLink> : null}
             <button type="button" className="pulse-btn pulse-btn--primary" onClick={() => { onReopen(item); setSel(null); }}>Reopen</button>
           </div>
         </div>
@@ -672,7 +681,7 @@ function PulseHeader() {
       <CaptureControl snapshot={snapshot} capturing={capturing}
         onCapture={() => void startRun("hourly")}
         onRun={(a) => void startRun(a.run as "hourly" | "daily" | "weekly")}
-        onToggle={(a) => void call(rpc.call("pulse_set_run_enabled", { run: a.run as "hourly" | "daily" | "weekly", enabled: a.enabled === false }) as Promise<PulseSnapshot>).then((next) => next && setSnapshot(next))}
+        onToggle={(a) => void call(rpc.call("pulse_set_run_enabled", { run: a.run as "hourly" | "daily" | "weekly", enabled: isPaused(a) }) as Promise<PulseSnapshot>).then((next) => next && setSnapshot(next))}
         onOpenThread={(id) => navigate.toThread(id)} />
     </div>
   );

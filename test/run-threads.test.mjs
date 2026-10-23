@@ -45,7 +45,7 @@ test("run threads coexist with the rest of state.json", () => {
   assert.ok(store.getState(h2).lastViewedAt);
 });
 
-test("a corrupt state.json falls back to an empty map instead of throwing", () => {
+test("a corrupt state.json throws from the store, so the server's guard can fall back", () => {
   const h = home();
   fs.writeFileSync(path.join(h, "state.json"), "{not json");
   // The server guards this read; the store itself still surfaces the parse error,

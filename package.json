@@ -15,7 +15,7 @@
   "scripts": {
     "build": "bb plugin build",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/*.test.mjs && node --experimental-strip-types --test test/*.test.ts"
+    "test": "node --test test/*.test.mjs && node --experimental-strip-types --import ./test/resolve-ts.mjs --test test/*.test.ts"
   },
   "engines": {
     "bb": ">=0.46",
