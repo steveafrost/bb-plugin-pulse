@@ -54,3 +54,29 @@ test("run logs need a string summary, and malformed records already on disk are 
   fs.appendFileSync(path.join(h, "runs.jsonl"), JSON.stringify({ run: "hourly", summary: true, finishedAt: new Date().toISOString() }) + "\nnot json\n");
   assert.deepEqual(store.readRuns(h).map((r) => r.summary), ["good"]);
 });
+
+test("reopening clears the old resolution so a later close doesn't reuse it", () => {
+  const h = home();
+  const item = { id: "slack:1", source: "slack", kind: "reply", title: "Question" };
+  store.upsert([item], "hourly", h);
+  store.upsert([{ id: item.id, status: "resolved", reason: "answered" }], "hourly", h);
+  store.upsert([{ id: item.id, reopen: true, reason: "new reply" }], "hourly", h);
+  assert.equal(store.listItems({ statuses: ["open"] }, h)[0].resolution, null);
+  store.userAction(item.id, "done", {}, h);
+  store.userAction(item.id, "open", {}, h);
+  store.userAction(item.id, "dismissed", {}, h);
+  const [closed] = store.listItems({ statuses: ["dismissed"] }, h);
+  assert.equal(closed.resolution, null);
+});
+
+test("recent runs know when the previous same-name run finished, even outside the recent slice", () => {
+  const h = home();
+  store.logRun({ run: "weekly", summary: "w1" }, h);
+  for (let i = 0; i < 12; i++) store.logRun({ run: "hourly", summary: `h${i}` }, h);
+  store.logRun({ run: "weekly", summary: "w2" }, h);
+  const runs = store.snapshot(h).recentRuns;
+  const w2 = runs.find((r) => r.summary === "w2");
+  assert.ok(!runs.some((r) => r.summary === "w1"));
+  assert.equal(w2.previousFinishedAt, store.readRuns(h)[0].finishedAt);
+  assert.equal(runs.find((r) => r.summary === "h0"), undefined);
+});

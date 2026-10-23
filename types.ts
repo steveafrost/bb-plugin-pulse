@@ -65,6 +65,8 @@ export interface PulseRun {
   run: string;
   startedAt: string | null;
   finishedAt: string;
+  /** When the previous run with this name finished, from the full history. */
+  previousFinishedAt?: string | null;
   summary: string;
   thread: string | null;
   sources: string[];

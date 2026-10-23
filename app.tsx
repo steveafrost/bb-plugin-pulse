@@ -550,7 +550,7 @@ function ClosedPopover({ items, onReopen, onBack }: { items: PulseItem[]; onReop
 /** Items whose history records this run creating or resolving them, between its previous run and this one. */
 function runEffects(run: PulseRun, runs: PulseRun[], items: PulseItem[]) {
   const prev = runs.find((r) => r.run === run.run && r.finishedAt < run.finishedAt);
-  const from = run.startedAt ?? prev?.finishedAt ?? "";
+  const from = run.startedAt ?? run.previousFinishedAt ?? prev?.finishedAt ?? "";
   const added: PulseItem[] = [];
   const resolved: PulseItem[] = [];
   for (const i of items) {
