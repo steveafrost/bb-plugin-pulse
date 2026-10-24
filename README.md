@@ -7,7 +7,7 @@ the app publishes and sends your taps back as commands. The board sorts items in
 
 ![Third Hand board](screenshots/board.png)
 
-[Watch the 72-second demo](https://github.com/steveafrost/bb-plugin-pulse/releases/download/v0.1.0/pulse-demo.mp4) (made-up data).
+[Watch the 72-second demo](https://github.com/steveafrost/bb-plugin-thirdhand/releases/download/v0.1.0/pulse-demo.mp4) (made-up data).
 
 - **A mirror, not a store.** The panel reads `snapshot.json` from the app's iCloud container and
   never writes it. Done, Snooze, Dismiss and Reopen append to `commands.jsonl`; the app applies them
