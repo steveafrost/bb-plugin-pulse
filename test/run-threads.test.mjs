@@ -7,7 +7,7 @@ import * as store from "../lib/store.mjs";
 
 // Run threads live outside plugin kv so a `bb plugin remove` cannot orphan them:
 // removal deletes kv, and a missing id spawns a fresh thread on the next run.
-const home = () => fs.mkdtempSync(path.join(os.tmpdir(), "pulse-rt-"));
+const home = () => fs.mkdtempSync(path.join(os.tmpdir(), "thirdhand-rt-"));
 
 test("run threads start empty and survive a reinstall-shaped kv wipe", () => {
   const h = home();

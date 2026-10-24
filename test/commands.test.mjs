@@ -7,7 +7,7 @@ import {
   COMPACT_BYTES, ackedIds, applyPending, dropAcked, enqueue, mirrorPaths, pendingFor, readPending,
 } from "../lib/commands.mjs";
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "pulse-cmd-"));
+const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "thirdhand-cmd-"));
 const lines = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
 const ack = (dir, id) => fs.appendFileSync(mirrorPaths(dir).ack, JSON.stringify({ id }) + "\n");
 

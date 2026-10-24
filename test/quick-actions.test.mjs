@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import * as store from "../lib/store.mjs";
 
-const home = () => fs.mkdtempSync(path.join(os.tmpdir(), "pulse-qa-"));
+const home = () => fs.mkdtempSync(path.join(os.tmpdir(), "thirdhand-qa-"));
 const base = { id: "calendar:evt1", title: "Decline sync", kind: "conflict" };
 
 test("stores quick actions on create and update", () => {
@@ -39,5 +39,5 @@ test("rejects malformed quick actions", () => {
     Array(4).fill({ label: "x", text: "a" }),
     "nope",
   ];
-  for (const qa of bad) assert.throws(() => store.upsert([{ ...base, quickActions: qa }], "hourly", h), store.PulseError);
+  for (const qa of bad) assert.throws(() => store.upsert([{ ...base, quickActions: qa }], "hourly", h), store.ThirdHandError);
 });

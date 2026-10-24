@@ -7,7 +7,7 @@ import { runPrompt, DEFAULT_SOURCES, ERRORS_RULE } from "../lib/prompts.ts";
 // logged errors for Teams and Slack and a clean run was indistinguishable from a
 // broken one.
 const ctx = {
-  cli: "pulse",
+  cli: "thirdhand",
   user: "Steve",
   timeZone: "America/New_York",
   memoryDir: "/memory",

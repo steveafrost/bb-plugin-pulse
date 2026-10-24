@@ -1,6 +1,6 @@
 # iCloud Mail and Calendar
 
-Read iCloud Mail and iCloud Calendar from Pulse on macOS or Linux, using open protocols over the
+Read iCloud Mail and iCloud Calendar from Third Hand on macOS or Linux, using open protocols over the
 network. Verified against a live account on 2026-10-19.
 
 ## Why this works when local Apple apps don't
@@ -21,18 +21,18 @@ an app-specific password:
 
 1. Go to [appleid.apple.com](https://appleid.apple.com) › **Sign-In and Security** ›
    **App-Specific Passwords** › **Generate**.
-2. Label it something recognisable, e.g. `pulse`.
+2. Label it something recognisable, e.g. `thirdhand`.
 3. Copy the password it shows you. Apple shows it once.
 
-Store it on disk, not in the Pulse settings. For example:
+Store it on disk, not in the Third Hand settings. For example:
 
 ```sh
-mkdir -p ~/.config/pulse
-chmod 700 ~/.config/pulse
-cat > ~/.config/pulse/icloud.env <<'EOF'
+mkdir -p ~/.config/thirdhand
+chmod 700 ~/.config/thirdhand
+cat > ~/.config/thirdhand/icloud.env <<'EOF'
 ICLOUD_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx
 EOF
-chmod 600 ~/.config/pulse/icloud.env
+chmod 600 ~/.config/thirdhand/icloud.env
 ```
 
 Both tools below read the password through a command at runtime, so the secret never appears in a
@@ -57,7 +57,7 @@ display-name = "Your Name"
 
 imap.server = "imaps://imap.mail.me.com:993"
 imap.sasl.plain.username = "you@example.com"
-imap.sasl.plain.password.command = "sh -c '. $HOME/.config/pulse/icloud.env; printf %s \"$ICLOUD_APP_PASSWORD\"'"
+imap.sasl.plain.password.command = "sh -c '. $HOME/.config/thirdhand/icloud.env; printf %s \"$ICLOUD_APP_PASSWORD\"'"
 
 mailbox.alias.inbox = "INBOX"
 mailbox.alias.sent = "Sent Messages"
@@ -121,7 +121,7 @@ collections = ["from a", "from b"]
 type = "caldav"
 url = "https://caldav.icloud.com/"
 username = "you@example.com"
-password.fetch = ["command", "sh", "-c", ". $HOME/.config/pulse/icloud.env; printf %s \"$ICLOUD_APP_PASSWORD\""]
+password.fetch = ["command", "sh", "-c", ". $HOME/.config/thirdhand/icloud.env; printf %s \"$ICLOUD_APP_PASSWORD\""]
 
 [storage mylocal]
 type = "filesystem"
@@ -175,7 +175,7 @@ characters"*:
 
 ## 4. The `sources` text
 
-Paste this into **Settings › Plugins › Pulse › How agents reach Slack, Gmail and Calendar**,
+Paste this into **Settings › Plugins › Third Hand › How agents reach Slack, Gmail and Calendar**,
 replacing `<YYYY-MM-DD>` usage with a computed date at runtime:
 
 ```text
@@ -186,7 +186,7 @@ auto-archives everything and there are typically 0 unread, so do NOT filter on u
 parsed as query text. Use `himalaya message read <ID>` for one body. Read only; never send, reply,
 move, delete or flag anything.
 
-iCloud Calendar: run `~/.config/pulse/icloud-cal-sync.sh` first (wrapping
+iCloud Calendar: run `~/.config/thirdhand/icloud-cal-sync.sh` first (wrapping
 `vdirsyncer -v ERROR sync mypair`; incremental, ~2s), then read with `khal list today 14d` (add
 `--json` for machine-readable). Read only; never create, edit or delete events.
 

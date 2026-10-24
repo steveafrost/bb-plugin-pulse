@@ -5,7 +5,7 @@ export type Kind = "reply" | "decision" | "rsvp" | "conflict" | "deadline" | "re
 export type Status = "open" | "waiting" | "snoozed" | "resolved" | "done" | "dismissed";
 export type Priority = "high" | "normal" | "low";
 
-export interface PulseItem {
+export interface ThirdHandItem {
   id: string;
   source: Source;
   kind: Kind;
@@ -23,13 +23,13 @@ export interface PulseItem {
   updatedAt: string;
   resolvedAt: string | null;
   lastChangedBy: string;
-  history?: PulseHistoryEntry[];
+  history?: ThirdHandHistoryEntry[];
   /** One-click helpers written by the capture runs: copy prepared text and/or open a link. */
   quickActions?: QuickAction[];
   /** Server-computed: skills an agent thread for this item would load (open/waiting items only). */
   agentSkills?: string[];
   /** Set when the user handed the item to an agent thread from the panel. */
-  action?: PulseItemAction | null;
+  action?: ThirdHandItemAction | null;
   /**
    * Transitions this Mac has queued for the iPhone but has not seen acknowledged
    * (lib/commands.mjs). The item keeps its snapshot status; the panel shows the
@@ -48,7 +48,7 @@ export interface QuickAction {
 
 export type ActionStatus = "running" | "ready" | "failed";
 
-export interface PulseItemAction {
+export interface ThirdHandItemAction {
   threadId: string;
   status: ActionStatus;
   startedAt: string;
@@ -59,7 +59,7 @@ export interface PulseItemAction {
   seenAt: string | null;
 }
 
-export interface PulseHistoryEntry {
+export interface ThirdHandHistoryEntry {
   at: string;
   by: string;
   change: string;
@@ -67,7 +67,7 @@ export interface PulseHistoryEntry {
   until?: string;
 }
 
-export interface PulseRun {
+export interface ThirdHandRun {
   run: string;
   startedAt: string | null;
   finishedAt: string;
@@ -79,7 +79,7 @@ export interface PulseRun {
   errors: string[];
 }
 
-export interface PulseDraft {
+export interface ThirdHandDraft {
   kind: string;
   date: string;
   file: string;
@@ -119,15 +119,15 @@ export interface MirrorInfo {
   pendingCount: number;
 }
 
-export interface PulseSnapshot {
+export interface ThirdHandSnapshot {
   /** The mirror directory (not the legacy item store). */
   home: string;
   generatedAt: string;
   lastViewedAt: string | null;
-  items: PulseItem[];
-  lastRuns: Record<string, PulseRun>;
-  recentRuns: PulseRun[];
-  draft: PulseDraft | null;
+  items: ThirdHandItem[];
+  lastRuns: Record<string, ThirdHandRun>;
+  recentRuns: ThirdHandRun[];
+  draft: ThirdHandDraft | null;
   automations: Automation[];
   parentThreadId: string | null;
   /** No project is set in the plugin settings yet. */

@@ -2,10 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { NEXT_WINDOW_DAYS, bucketOf, horizonOf, isOnBoard, sortItems } from "../lib/horizon.ts";
-import type { PulseItem } from "../types.ts";
+import type { ThirdHandItem } from "../types.ts";
 
 // The iPhone is the source of truth for content, so it is the source of truth for
-// placement: test/fixtures/horizon-cases.json is the fixture PulseCore's
+// placement: test/fixtures/horizon-cases.json is the fixture ThirdHandCore's
 // HorizonTests assert against, so both boards agree item for item.
 const fixture = JSON.parse(fs.readFileSync(new URL("./fixtures/horizon-cases.json", import.meta.url), "utf8"));
 const at = new Date(fixture.at);
@@ -35,7 +35,7 @@ test("dated items move toward Now as the due date approaches", () => {
 
 test("an undated normal-priority item is Later, not Next", () => {
   // Changed from the panel's old rule: it used to sit in Next until it was
-  // handled. PulseCore puts it in Later, so the panel does too.
+  // handled. ThirdHandCore puts it in Later, so the panel does too.
   assert.equal(horizonOf(item({ priority: "normal" }), at), "later");
   assert.equal(horizonOf(item({ priority: "low" }), at), "later");
   assert.equal(horizonOf(item({ priority: "high" }), at), "now");
@@ -79,9 +79,9 @@ test("sortItems is a total order: priority, due (undated last), firstSeenAt, id"
     { id: "a", priority: "high", due: "2026-10-26T09:00:00.000Z", firstSeenAt: base.firstSeenAt },
     { id: "b", priority: "high", due: "2026-10-24T09:00:00.000Z", firstSeenAt: base.firstSeenAt },
     { id: "e", priority: "normal", due: null, firstSeenAt: base.firstSeenAt },
-  ] as unknown as PulseItem[];
+  ] as unknown as ThirdHandItem[];
   assert.deepEqual(sortItems(rows).map((r) => r.id), ["b", "a", "c", "e", "d"]);
   // Ties fall through to id rather than to an inconsistent comparator.
-  const twins = [{ id: "z" }, { id: "a" }].map((x) => ({ ...x, priority: "normal", due: null, firstSeenAt: base.firstSeenAt })) as unknown as PulseItem[];
+  const twins = [{ id: "z" }, { id: "a" }].map((x) => ({ ...x, priority: "normal", due: null, firstSeenAt: base.firstSeenAt })) as unknown as ThirdHandItem[];
   assert.deepEqual(sortItems(twins).map((r) => r.id), ["a", "z"]);
 });

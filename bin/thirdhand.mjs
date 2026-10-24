@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// pulse: CLI over the Pulse item store (lib/store.mjs). Agents write through this.
+// thirdhand: CLI over the Third Hand item store (lib/store.mjs). Agents write through this.
 import fs from "node:fs";
 import * as store from "../lib/store.mjs";
 
@@ -34,38 +34,38 @@ function actionLine(a) {
   return `action: ${a.status}${a.status !== "running" && !a.seenAt ? " (unread)" : ""} · thread ${a.threadId} · started ${a.startedAt}${a.finishedAt ? ` · finished ${a.finishedAt}` : ""}${a.summary ? ` · ${a.summary}` : ""}`;
 }
 
-const HELP = `pulse — item store for Pulse   (home: ${store.pulseHome()})
+const HELP = `thirdhand — item store for Third Hand   (home: ${store.thirdhandHome()})
 
 Agent commands
-  pulse list [--status open,waiting] [--all] [--source slack] [--json]
-  pulse upsert --run <hourly|daily|weekly|manual>      < JSON array on stdin
+  thirdhand list [--status open,waiting] [--all] [--source slack] [--json]
+  thirdhand upsert --run <hourly|daily|weekly|manual>      < JSON array on stdin
       item: { id:"<source>:<stable id>", title, detail?, url?, kind?, source?, due?, priority?,
               people?, status?: open|waiting|resolved, reason?, reopen?: true,
               quickActions?: [{ label, text?, url? }] }   (max 3; copy text and/or open https url)
       kinds: ${KINDS.join("|")}   priorities: ${PRIORITIES.join("|")}
       kind "fyi" = informational, no action needed; shown under Nice to Know. Default kind: followup.
       Items the user marked done/dismissed/snoozed keep their status unless reopen:true + reason.
-  pulse changes [--since <ISO>|last-viewed|last-run] [--run hourly] [--json]
-  pulse log --run <name> --summary "<one line>" [--sources slack,gmail,calendar] [--errors "a; b"]
-  pulse runs [--run <name>] [--limit 5]
-  pulse draft --kind weekly < markdown       |  pulse draft latest [--kind weekly]
+  thirdhand changes [--since <ISO>|last-viewed|last-run] [--run hourly] [--json]
+  thirdhand log --run <name> --summary "<one line>" [--sources slack,gmail,calendar] [--errors "a; b"]
+  thirdhand runs [--run <name>] [--limit 5]
+  thirdhand draft --kind weekly < markdown       |  thirdhand draft latest [--kind weekly]
 
 User commands (panel)
-  pulse done|dismiss <id> [--reason ...]    pulse snooze <id> --until <ISO>    pulse reopen <id>
-  pulse seen [--at <ISO>]    pulse show <id>   (first line: agent action status/thread when one was started)
-  The panel's robot button starts an agent thread for an item in the Pulse project and
+  thirdhand done|dismiss <id> [--reason ...]    thirdhand snooze <id> --until <ISO>    thirdhand reopen <id>
+  thirdhand seen [--at <ISO>]    thirdhand show <id>   (first line: agent action status/thread when one was started)
+  The panel's robot button starts an agent thread for an item in the Third Hand project and
   records item.action = { threadId, status: running|ready|failed, startedAt, finishedAt, summary, seenAt }.
 `;
 
 function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   const { pos, flags } = parseArgs(rest);
-  const need = (v, msg) => v || (() => { throw new store.PulseError(msg); })();
+  const need = (v, msg) => v || (() => { throw new store.ThirdHandError(msg); })();
   switch (cmd) {
     case "upsert": {
       const raw = readStdin().trim() || need("", "upsert expects a JSON array of items on stdin");
       let input;
-      try { input = JSON.parse(raw); } catch (e) { throw new store.PulseError(`stdin is not valid JSON: ${e.message}`); }
+      try { input = JSON.parse(raw); } catch (e) { throw new store.ThirdHandError(`stdin is not valid JSON: ${e.message}`); }
       return print(store.upsert(input, need(flags.run, "--run <hourly|daily|weekly|manual> is required")), flags);
     }
     case "list": {
@@ -110,11 +110,11 @@ function main() {
       return print({ id: it.id, status: it.status, snoozedUntil: it.snoozedUntil }, flags);
     }
     case undefined: case "help": case "--help": case "-h": return process.stdout.write(HELP);
-    default: throw new store.PulseError(`unknown command ${cmd}\n\n${HELP}`);
+    default: throw new store.ThirdHandError(`unknown command ${cmd}\n\n${HELP}`);
   }
 }
 
 try { main(); } catch (e) {
-  if (e instanceof store.PulseError) { process.stderr.write(`pulse: ${e.message}\n`); process.exit(1); }
+  if (e instanceof store.ThirdHandError) { process.stderr.write(`thirdhand: ${e.message}\n`); process.exit(1); }
   throw e;
 }

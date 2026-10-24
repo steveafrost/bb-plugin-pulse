@@ -1,6 +1,6 @@
 # Google Workspace (Gmail and Calendar)
 
-Read Gmail and Google Calendar from Pulse with a `gcloud` Application Default Credentials file, then
+Read Gmail and Google Calendar from Third Hand with a `gcloud` Application Default Credentials file, then
 call the REST APIs directly.
 
 This recipe exists mostly because the obvious approach **does not work** — see the trap below before

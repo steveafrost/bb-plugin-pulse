@@ -1,14 +1,14 @@
 /**
- * bb-plugin-pulse — server.
+ * bb-plugin-thirdhand — server.
  *
- * Pulse on the iPhone owns the data (pulse-ios docs/DATA-CONTRACT.md). This
+ * Third Hand on the iPhone owns the data (thirdhand-ios docs/DATA-CONTRACT.md). This
  * server reads the iOS snapshot from the mirror directory (lib/snapshot.mjs),
  * never writes it, and forwards the panel's user actions as commands
  * (lib/commands.mjs) for the app to apply. It watches snapshot.json and polls it
- * every 5 s, pushing `pulse-changed` only when `generatedAt` advances.
+ * every 5 s, pushing `thirdhand-changed` only when `generatedAt` advances.
  *
  * Boundaries worth knowing:
- *   - The mirror is the panel's only item source. `lib/store.mjs` and the `pulse`
+ *   - The mirror is the panel's only item source. `lib/store.mjs` and the `thirdhand`
  *     CLI over it still work for an install that has not migrated, but nothing in
  *     the panel's read or write path touches items.json any more.
  *   - Capture runs are legacy: iOS captures now, so schedules are off by default
@@ -17,7 +17,7 @@
  *     rather than deleted, because it is entangled with run threads, the durable
  *     thread map and the run log the panel still displays.
  *   - Agent threads stay: they are Mac-local activity, so their records live in
- *     $PULSE_HOME/actions.json (lib/actions.mjs), never in the snapshot.
+ *     $THIRDHAND_HOME/actions.json (lib/actions.mjs), never in the snapshot.
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -42,7 +42,7 @@ import { threadGone } from "./lib/thread-gone";
 import { actionPrompt, readySummary, type ActionContext } from "./lib/action";
 
 export { actionPrompt, readySummary, type ActionContext };
-import type { ActionStatus, Automation, ItemAction, PulseItem, PulseRun, PulseSnapshot } from "./types";
+import type { ActionStatus, Automation, ItemAction, ThirdHandItem, ThirdHandRun, ThirdHandSnapshot } from "./types";
 
 type Home = string;
 /**
@@ -51,7 +51,7 @@ type Home = string;
  * item read and write paths are the mirror and the command writer, below.
  */
 const store = storeModule as unknown as {
-  pulseHome(): string;
+  thirdhandHome(): string;
   getRunThreads(home: Home): Record<string, string>;
   setRunThread(name: string, threadId: string | null, home: Home): Record<string, string>;
 };
@@ -64,9 +64,9 @@ interface MirrorRead {
   generatedAt: string | null;
   deviceName: string | null;
   lastViewedAt: string | null;
-  items: PulseItem[];
-  runs: PulseRun[];
-  draft: PulseSnapshot["draft"];
+  items: ThirdHandItem[];
+  runs: ThirdHandRun[];
+  draft: ThirdHandSnapshot["draft"];
   message: string | null;
 }
 const mirror = mirrorModule as unknown as {
@@ -81,17 +81,17 @@ const commands = commandsModule as unknown as {
 };
 const panel = panelModule as unknown as {
   pendingByItem(pending?: unknown[]): Map<string, ItemAction[]>;
-  actionsByItem(entries?: Array<[string, NonNullable<PulseItem["action"]>]>): Record<string, NonNullable<PulseItem["action"]>>;
-  projectItems(items: PulseItem[], opts: { actions?: Record<string, NonNullable<PulseItem["action"]>>; pending?: Map<string, ItemAction[]>; skillsFor?: ((item: PulseItem) => SkillRef[]) | null }): PulseItem[];
+  actionsByItem(entries?: Array<[string, NonNullable<ThirdHandItem["action"]>]>): Record<string, NonNullable<ThirdHandItem["action"]>>;
+  projectItems(items: ThirdHandItem[], opts: { actions?: Record<string, NonNullable<ThirdHandItem["action"]>>; pending?: Map<string, ItemAction[]>; skillsFor?: ((item: ThirdHandItem) => SkillRef[]) | null }): ThirdHandItem[];
 };
 const actions = actionsModule as unknown as {
-  startAction(home: Home, id: string, opts: { threadId: string; at?: string }): NonNullable<PulseItem["action"]>;
-  setActionStatus(home: Home, id: string, status: ActionStatus, opts: { threadId?: string; summary?: string | null }): NonNullable<PulseItem["action"]> | null;
-  markActionSeen(home: Home, id: string): NonNullable<PulseItem["action"]> | null;
-  actionEntries(home: Home, status?: ActionStatus | null): Array<[string, NonNullable<PulseItem["action"]>]>;
+  startAction(home: Home, id: string, opts: { threadId: string; at?: string }): NonNullable<ThirdHandItem["action"]>;
+  setActionStatus(home: Home, id: string, status: ActionStatus, opts: { threadId?: string; summary?: string | null }): NonNullable<ThirdHandItem["action"]> | null;
+  markActionSeen(home: Home, id: string): NonNullable<ThirdHandItem["action"]> | null;
+  actionEntries(home: Home, status?: ActionStatus | null): Array<[string, NonNullable<ThirdHandItem["action"]>]>;
 };
 
-const CHANGED = "pulse-changed";
+const CHANGED = "thirdhand-changed";
 const RUN_NAMES: RunName[] = ["hourly", "daily", "weekly"];
 const RUN_LABEL: Record<RunName, string> = { hourly: "Hourly", daily: "Daily", weekly: "Weekly" };
 const DEFAULT_CRON: Record<RunName, string> = { hourly: "0 */2 * * *", daily: "0 16 * * *", weekly: "0 15 * * 5" };
@@ -109,8 +109,8 @@ const systemTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone ||
 const shellQuote = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
 
 export const rpcContract = defineRpcContract({
-  pulse_snapshot: { input: z.null(), output: z.any() },
-  pulse_action: {
+  thirdhand_snapshot: { input: z.null(), output: z.any() },
+  thirdhand_action: {
     input: z.object({
       id: z.string().min(3).max(400),
       action: z.enum(["done", "dismiss", "snooze", "reopen"]),
@@ -118,16 +118,16 @@ export const rpcContract = defineRpcContract({
     }),
     output: z.any(),
   },
-  pulse_seen: { input: z.null(), output: z.any() },
-  pulse_run_now: { input: z.object({ run: z.enum(["hourly", "daily", "weekly"]) }), output: z.object({ threadId: z.string() }) },
-  pulse_set_run_enabled: { input: z.object({ run: z.enum(["hourly", "daily", "weekly"]), enabled: z.boolean() }), output: z.any() },
-  pulse_start_action: { input: z.object({ id: z.string().min(3).max(400) }), output: z.any() },
-  pulse_action_seen: { input: z.object({ id: z.string().min(3).max(400) }), output: z.any() },
+  thirdhand_seen: { input: z.null(), output: z.any() },
+  thirdhand_run_now: { input: z.object({ run: z.enum(["hourly", "daily", "weekly"]) }), output: z.object({ threadId: z.string() }) },
+  thirdhand_set_run_enabled: { input: z.object({ run: z.enum(["hourly", "daily", "weekly"]), enabled: z.boolean() }), output: z.any() },
+  thirdhand_start_action: { input: z.object({ id: z.string().min(3).max(400) }), output: z.any() },
+  thirdhand_action_seen: { input: z.object({ id: z.string().min(3).max(400) }), output: z.any() },
 });
 
 export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
-    project: { type: "project", label: "Project for run and agent threads", description: "Pulse creates its Hourly, Daily and Weekly threads and its agent threads here. Required." },
+    project: { type: "project", label: "Project for run and agent threads", description: "Third Hand creates its Hourly, Daily and Weekly threads and its agent threads here. Required." },
     userName: { type: "string", label: "Your first name", description: "Used in the prompts (\"what needs Sam\"). Empty = \"the user\".", default: "" },
     sources: {
       type: "string", experimental_multiline: true, default: DEFAULT_SOURCES,
@@ -149,23 +149,23 @@ export default async function plugin(bb: BbPluginApi) {
     permissionMode: {
       type: "select", label: "Permission mode for capture runs", options: ["default", "accept-edits", "auto", "full"],
       experimental_optionLabels: { default: "Thread default" }, default: "default",
-      description: "Runs call the Pulse CLI from a shell, so they need permission to run commands.",
+      description: "Runs call the Third Hand CLI from a shell, so they need permission to run commands.",
     },
     hourlyCron: { type: "string", label: "Hourly schedule (cron, server time; empty = off)", description: "The default runs every 2 hours.", default: DEFAULT_CRON.hourly },
     dailyCron: { type: "string", label: "Daily schedule (cron, server time; empty = off)", default: DEFAULT_CRON.daily },
     weeklyCron: { type: "string", label: "Weekly schedule (cron, server time; empty = off)", default: DEFAULT_CRON.weekly },
-    section: { type: "string", label: "Sidebar section for Pulse threads (created if missing; empty = none)", default: "Pulse" },
+    section: { type: "string", label: "Sidebar section for Third Hand threads (created if missing; empty = none)", default: "Third Hand" },
     timeZone: { type: "string", label: "Time zone (IANA; empty = server time zone)", default: "" },
     snapshotDir: {
-      type: "string", label: "Mirror directory (empty = $PULSE_SNAPSHOT_DIR, else the Pulse iCloud folder)", default: "",
-      description: "Where Pulse on the iPhone writes snapshot.json. Leave empty to use its iCloud container, or point it at any folder that mirrors it.",
+      type: "string", label: "Mirror directory (empty = $THIRDHAND_SNAPSHOT_DIR, else the Third Hand iCloud folder)", default: "",
+      description: "Where Third Hand on the iPhone writes snapshot.json. Leave empty to use its iCloud container, or point it at any folder that mirrors it.",
     },
     captureRuns: {
       type: "select", label: "Capture runs", options: ["iphone", "mac"], default: "iphone",
-      experimental_optionLabels: { iphone: "Pulse on iPhone (recommended)", mac: "This Mac (legacy schedules)" },
-      description: "Pulse captures on the iPhone now. Mac schedules are kept for installs that still rely on them, and are off by default.",
+      experimental_optionLabels: { iphone: "Third Hand on iPhone (recommended)", mac: "This Mac (legacy schedules)" },
+      description: "Third Hand captures on the iPhone now. Mac schedules are kept for installs that still rely on them, and are off by default.",
     },
-    storeDir: { type: "string", label: "Plugin state directory (empty = $PULSE_HOME or ~/.config/pulse)", default: "" },
+    storeDir: { type: "string", label: "Plugin state directory (empty = $THIRDHAND_HOME or ~/.config/thirdhand)", default: "" },
     hourlyThread: { type: "string", label: "Existing thread for Hourly runs (optional thread id)", default: "" },
     dailyThread: { type: "string", label: "Existing thread for Daily runs (optional thread id)", default: "" },
     weeklyThread: { type: "string", label: "Existing thread for Weekly runs (optional thread id)", default: "" },
@@ -186,8 +186,8 @@ export default async function plugin(bb: BbPluginApi) {
       section: v.section.trim(),
       timeZone: (() => { try { new Intl.DateTimeFormat("en-US", { timeZone }); return timeZone; } catch { bb.log.warn(`bad time zone "${timeZone}"`); return systemTimeZone(); } })(),
       // Absolute, so the panel and the run's shell (which runs in the project cwd) share one store.
-      home: path.resolve(os.homedir(), v.storeDir.trim().replace(/^~(?=\/|$)/, os.homedir()) || store.pulseHome()),
-      // Resolved once at load: PULSE_SNAPSHOT_DIR, then PULSE_HOME, then the app's iCloud container.
+      home: path.resolve(os.homedir(), v.storeDir.trim().replace(/^~(?=\/|$)/, os.homedir()) || store.thirdhandHome()),
+      // Resolved once at load: THIRDHAND_SNAPSHOT_DIR, then THIRDHAND_HOME, then the app's iCloud container.
       mirrorDir: path.resolve(os.homedir(), (v.snapshotDir ?? "").trim().replace(/^~(?=\/|$)/, os.homedir()) || mirror.resolveMirrorDir()),
       captureOnMac: (v.captureRuns ?? "iphone") === "mac",
       threads: { hourly: v.hourlyThread.trim(), daily: v.dailyThread.trim(), weekly: v.weeklyThread.trim() } as Record<RunName, string>,
@@ -206,14 +206,14 @@ export default async function plugin(bb: BbPluginApi) {
   });
   fs.mkdirSync(home, { recursive: true });
   // A project is only needed for the Mac-side surfaces: legacy run threads and agent threads.
-  if (!config.projectId && config.captureOnMac) bb.status.needsConfiguration("Choose a project for Pulse's run threads, then reload the plugin.");
+  if (!config.projectId && config.captureOnMac) bb.status.needsConfiguration("Choose a project for Third Hand's run threads, then reload the plugin.");
 
-  const cliCommand = () => `PULSE_HOME=${shellQuote(home)} node ${shellQuote(path.join(ROOT, "bin/pulse.mjs"))}`;
+  const cliCommand = () => `THIRDHAND_HOME=${shellQuote(home)} node ${shellQuote(path.join(ROOT, "bin/thirdhand.mjs"))}`;
   const promptContext = (): PromptContext => ({
     cli: cliCommand(), user: config.user, timeZone: config.timeZone, memoryDir: path.join(home, "memory"),
     sources: config.sources, instructions: config.instructions,
   });
-  const skillsForItem = (item: PulseItem) => skillsFor(item, config.skillRules);
+  const skillsForItem = (item: ThirdHandItem) => skillsFor(item, config.skillRules);
 
   // ---- Capture runs (plugin-owned schedules) ----
   const pausedKey = (name: RunName) => `paused:${name}`;
@@ -336,7 +336,7 @@ export default async function plugin(bb: BbPluginApi) {
   const RUN_THREAD_VISIBILITY = "hidden" as const;
   /**
    * Hide a run thread that predates this default, so an upgraded install does not
-   * keep one visible Pulse row per run. Best-effort: a refusal must not fail a run.
+   * keep one visible Third Hand row per run. Best-effort: a refusal must not fail a run.
    */
   const hideRunThread = async (name: RunName, threadId: string) => {
     try {
@@ -351,9 +351,9 @@ export default async function plugin(bb: BbPluginApi) {
   /** A 409 from a send that means the thread itself is unusable, not a transient conflict. */
   const deadThread = (cause: unknown) => /thread is archived|environment is unavailable|thread not found/i.test(cause instanceof Error ? cause.message : String(cause));
   async function startRun(name: RunName, trigger: "schedule" | "manual"): Promise<string> {
-    if (!config.projectId) throw new Error("Choose a project in Pulse settings first");
+    if (!config.projectId) throw new Error("Choose a project in Third Hand settings first");
     const stamp = new Date().toLocaleString("en-US", { timeZone: config.timeZone, dateStyle: "medium", timeStyle: "short" });
-    const text = `[Pulse ${trigger === "manual" ? "manual" : "scheduled"} ${name} run · ${stamp}]\n\n${runPrompt(name, promptContext())}`;
+    const text = `[Third Hand ${trigger === "manual" ? "manual" : "scheduled"} ${name} run · ${stamp}]\n\n${runPrompt(name, promptContext())}`;
     const existing = await resolveRunThread(name, { prune: true });
     if (existing) {
       const sources = Object.fromEntries(Object.keys(execution()).map((k) => [k, "explicit"]));
@@ -384,11 +384,11 @@ export default async function plugin(bb: BbPluginApi) {
         projectId: config.projectId,
         ...(sectionId ? { sectionId } : {}),
         environment: { type: "project-default" },
-        title: `Pulse ${RUN_LABEL[name]}`,
+        title: `Third Hand ${RUN_LABEL[name]}`,
         prompt: text,
         visibility: RUN_THREAD_VISIBILITY,
         ...execution(),
-        pluginMetadata: { pulseRun: name },
+        pluginMetadata: { thirdhandRun: name },
       });
       await rememberRunThread(name, thread.id);
       bb.log.info(`${trigger} ${name} run → new thread ${thread.id}`);
@@ -420,18 +420,18 @@ export default async function plugin(bb: BbPluginApi) {
   // ---- The mirror: the panel's only item source ----
   let current: MirrorRead = mirror.readSnapshot({ dir: config.mirrorDir });
 
-  function lastRunsFrom(runs: PulseRun[]): Record<string, PulseRun> {
-    const out: Record<string, PulseRun> = {};
+  function lastRunsFrom(runs: ThirdHandRun[]): Record<string, ThirdHandRun> {
+    const out: Record<string, ThirdHandRun> = {};
     for (const run of runs) out[run.run] = run;
     return out;
   }
 
-  async function fullSnapshot(): Promise<PulseSnapshot> {
+  async function fullSnapshot(): Promise<ThirdHandSnapshot> {
     // A panel fetch is also an opportunity to catch a snapshot change the watcher
     // missed, so the next render is never stale by a whole interval.
     refreshMirror();
     const read = current;
-    let actionRecords: Record<string, NonNullable<PulseItem["action"]>> = {};
+    let actionRecords: Record<string, NonNullable<ThirdHandItem["action"]>> = {};
     try {
       actionRecords = panel.actionsByItem(actions.actionEntries(home));
     } catch (error) {
@@ -486,13 +486,13 @@ export default async function plugin(bb: BbPluginApi) {
       const previous = current;
       current = result;
       if (result.state !== "connected" && previous.state !== result.state) {
-        bb.log.info(`pulse mirror: ${result.state}${result.message ? ` (${result.message})` : ""}`);
+        bb.log.info(`thirdhand mirror: ${result.state}${result.message ? ` (${result.message})` : ""}`);
       }
       // The app acknowledged commands: drop them from the pending set, and compact
       // the log when it has grown or every line is acked.
       try {
         const dropped = commands.dropAcked({ dir: config.mirrorDir });
-        if (dropped.removed) bb.log.info(`pulse mirror: ${dropped.removed} command(s) acked${dropped.compacted ? ", log compacted" : ""}`);
+        if (dropped.removed) bb.log.info(`thirdhand mirror: ${dropped.removed} command(s) acked${dropped.compacted ? ", log compacted" : ""}`);
       } catch (error) {
         bb.log.warn(`could not prune acked commands: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -507,7 +507,7 @@ export default async function plugin(bb: BbPluginApi) {
     try {
       poller.poll();
     } catch (error) {
-      bb.log.warn(`pulse mirror read failed: ${error instanceof Error ? error.message : String(error)}`);
+      bb.log.warn(`thirdhand mirror read failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
@@ -524,7 +524,7 @@ export default async function plugin(bb: BbPluginApi) {
     } catch (error) {
       // No mirror directory yet is the normal first-run state: the interval poll
       // picks the snapshot up as soon as the iPhone writes it.
-      bb.log.info(`pulse mirror not watchable yet (${config.mirrorDir}): ${error instanceof Error ? error.message : String(error)}`);
+      bb.log.info(`thirdhand mirror not watchable yet (${config.mirrorDir}): ${error instanceof Error ? error.message : String(error)}`);
       watcher = undefined;
     }
   };
@@ -535,27 +535,27 @@ export default async function plugin(bb: BbPluginApi) {
   }, MIRROR_POLL_MS);
 
   bb.rpc.register(rpcContract, {
-    pulse_snapshot: () => fullSnapshot(),
-    pulse_action: async ({ id, action, until }) => {
+    thirdhand_snapshot: () => fullSnapshot(),
+    thirdhand_action: async ({ id, action, until }) => {
       // The plugin only asserts transitions; iOS applies them and republishes.
       const result = commands.enqueue({ op: action, itemId: id, until: until ?? null, reason: null }, { dir: config.mirrorDir });
-      if (result.queued) bb.log.info(`pulse command ${action} ${id} → ${config.mirrorDir}`);
+      if (result.queued) bb.log.info(`thirdhand command ${action} ${id} → ${config.mirrorDir}`);
       return fullSnapshot();
     },
     // The iPhone owns lastViewedAt and there is no command for it, so "mark all
     // seen" only clears the panel's own New markers. Nothing is written.
-    pulse_seen: async () => fullSnapshot(),
-    pulse_run_now: async ({ run: name }) => ({ threadId: await startRun(name, "manual") }),
-    pulse_set_run_enabled: async ({ run: name, enabled }) => {
+    thirdhand_seen: async () => fullSnapshot(),
+    thirdhand_run_now: async ({ run: name }) => ({ threadId: await startRun(name, "manual") }),
+    thirdhand_set_run_enabled: async ({ run: name, enabled }) => {
       await bb.storage.kv.set(pausedKey(name), !enabled);
       publish();
       return fullSnapshot();
     },
-    pulse_start_action: async ({ id }) => {
+    thirdhand_start_action: async ({ id }) => {
       const threadId = await startAction(id);
       return { threadId, snapshot: await fullSnapshot() };
     },
-    pulse_action_seen: async ({ id }) => {
+    thirdhand_action_seen: async ({ id }) => {
       actions.markActionSeen(home, id);
       return fullSnapshot();
     },
@@ -574,7 +574,7 @@ export default async function plugin(bb: BbPluginApi) {
     if (starting.has(id)) throw new Error("An action for this item is already starting");
     starting.add(id);
     try {
-      if (!config.projectId) throw new Error("Choose a project in Pulse settings first");
+      if (!config.projectId) throw new Error("Choose a project in Third Hand settings first");
       const sectionId = await sectionIdFor();
       const thread = await bb.sdk.threads.spawn({
         projectId: config.projectId,
@@ -582,7 +582,7 @@ export default async function plugin(bb: BbPluginApi) {
         environment: { type: "project-default" },
         title: item.title.slice(0, 120),
         prompt: actionPrompt(item, { user: config.user, sources: config.sources, timeZone: config.timeZone, skills: skillsForItem(item) }),
-        pluginMetadata: { pulseItemId: id },
+        pluginMetadata: { thirdhandItemId: id },
       });
       try {
         // The item must still be in the snapshot: if the app republished without it
