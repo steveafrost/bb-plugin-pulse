@@ -489,16 +489,16 @@ export default async function plugin(bb: BbPluginApi) {
    * queueing a second one, so a thread stuck behind a long turn ends up with one pending run that
    * carries the current window, not a pile of stale ones.
    */
-  const queuedRunRow = async (threadId: string) => {
+  type QueuedRow = { id: string; updatedAt: number; payload?: { kind?: string }; content: { type: string; text?: string }[] };
+  const queuedRows = async (threadId: string): Promise<QueuedRow[]> => {
     try {
-      const rows = await bb.sdk.threads.queuedMessages.list({ threadId });
-      return (rows as { id: string; updatedAt: number; payload?: { kind?: string }; content: { type: string; text?: string }[] }[])
-        .find((r) => r.payload?.kind !== "retry" && r.content.some((c) => c.type === "text" && RUN_HEADER.test(c.text ?? ""))) ?? null;
+      return (await bb.sdk.threads.queuedMessages.list({ threadId })) as QueuedRow[];
     } catch (error) {
       bb.log.warn(`could not read the queue of ${threadId}: ${message(error)}`);
-      return null;
+      return [];
     }
   };
+  const isRunRow = (r: QueuedRow) => r.payload?.kind !== "retry" && r.content.some((c) => c.type === "text" && RUN_HEADER.test(c.text ?? ""));
 
   /** Send a run's prompt to its thread (created on first run, replaced once a day). */
   async function startRun(name: RunName, trigger: "schedule" | "manual" | "catch-up"): Promise<string> {
@@ -521,7 +521,18 @@ export default async function plugin(bb: BbPluginApi) {
         break;
       }
       if (busy) {
-        const row = await queuedRunRow(id);
+        const rows = await queuedRows(id);
+        const row = rows.find(isRunRow);
+        // A pending automatic retry re-sends an older prompt; this one supersedes it. (Only on
+        // Pulse's own threads: a pinned thread's retries may be the user's.)
+        if (!pinned) {
+          for (const retry of rows.filter((r) => r.payload?.kind === "retry")) {
+            await bb.sdk.threads.queuedMessages.delete({ threadId: id, queuedMessageId: retry.id }).then(
+              () => bb.log.info(`dropped the pending retry on ${id}; the new ${name} run replaces it`),
+              (error) => bb.log.warn(`could not drop the pending retry on ${id}: ${message(error)}`),
+            );
+          }
+        }
         if (row) {
           try {
             await bb.sdk.threads.queuedMessages.update({ threadId: id, queuedMessageId: row.id, expectedUpdatedAt: row.updatedAt, input });
@@ -660,13 +671,22 @@ export default async function plugin(bb: BbPluginApi) {
    * any enabled schedule whose latest tick in the last day has no dispatch and no logged run.
    * A fresh install (no dispatch, no run yet) has missed nothing.
    */
+  /** The cron each run had at the previous load: a tick under a different schedule was never due. */
+  const previousCron = new Map<RunName, string | undefined>();
+  for (const run of RUN_NAMES) {
+    previousCron.set(run, await bb.storage.kv.get<string>(`cron:${run}`));
+    await bb.storage.kv.set(`cron:${run}`, loadedCron[run]);
+  }
   async function catchUp() {
     const now = Date.now();
     for (const run of ["weekly", "daily", "hourly"] as const) {
       const cron = loadedCron[run];
       if (!cron || registered.get(run) !== null || (await isPaused(run))) continue;
+      if (previousCron.get(run) !== cron) continue; // first load with this schedule (or of 0.1.14)
       const tick = prevCronRun(cron, new Date(now));
       if (!tick || now - tick.getTime() > CATCH_UP_WINDOW_MS || now - tick.getTime() < CATCH_UP_GRACE_MS) continue;
+      // An Hourly tick that yielded to a Daily or Weekly run at the time was skipped on purpose.
+      if (run === "hourly" && (await hourlyYields(tick.getTime()))) continue;
       const last = lastRunOf(run);
       const sent = (await dispatches(run)).at(-1);
       if (!last && !sent) continue;

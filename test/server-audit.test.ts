@@ -85,6 +85,30 @@ test("server#2 a scheduled run skips a thread that has been busy for over an hou
   assert.match((await f.automation("hourly")).failure.error, /busy for 7\d min/);
 });
 
+test("server#2 a new run drops a pending automatic retry instead of running twice", async () => {
+  const f = fakeBb({ threads: { thr_run: { status: "error" } } });
+  await plugin(f.bb as never);
+  f.kv.set("thread:hourly", "thr_run");
+  f.queues.set("thr_run", [{ id: "qr", updatedAt: 1, payload: { kind: "retry" }, content: [{ type: "text", text: "[Pulse scheduled hourly run · old]" }] }]);
+  await f.rpc.pulse_run_now!({ run: "hourly" });
+  assert.deepEqual(f.calls["queued.delete"]?.map(([a]) => (a as { queuedMessageId: string }).queuedMessageId), ["qr"]);
+  assert.equal(f.count("threads.send"), 1);
+});
+
+test("server#4 an Hourly tick that yielded to the Daily is not caught up later", async () => {
+  // Daily 30 minutes after the Hourly tick, both in the past: the Hourly skipped on purpose.
+  const hourly = cronAt(-80);
+  const daily = cronAt(-50);
+  const f = fakeBb({ settings: { hourlyCron: hourly, dailyCron: daily, weeklyCron: "" }, kv: { "cron:hourly": hourly, "cron:daily": daily } });
+  await plugin(f.bb as never);
+  f.kv.set("thread:hourly", "thr_h");
+  f.kv.set("dispatches:hourly", [{ at: new Date(Date.now() - 23 * 60 * MIN).toISOString(), threadId: "thr_h", trigger: "schedule" }]);
+  f.kv.set("dispatches:daily", [{ at: new Date(Date.now() - 50 * MIN).toISOString(), threadId: "thr_d", trigger: "schedule" }]);
+  store.logRun({ run: "daily", summary: "ok", sources: ["slack"] }, f.home);
+  await f.startServices();
+  assert.equal(f.count("threads.send"), 0);
+});
+
 // ---- server.md #3 / improvement 6: a cron bb rejected showed as enabled with a next run ----
 test("server#3 a schedule bb refuses shows as not running, with bb's reason", async () => {
   const f = fakeBb({ settings: { hourlyCron: "0 9-30 * * *" } });
@@ -123,7 +147,8 @@ test("server improvement 6: a project set after load is reported, since bb keeps
 
 // ---- server.md #4 / improvement 3: a run due while Pulse was not loaded was skipped ----
 test("server#4 a tick missed across a reload is caught up on load", async () => {
-  const f = fakeBb({ settings: { dailyCron: cronAt(-10), hourlyCron: "", weeklyCron: "" } });
+  const cron = cronAt(-10);
+  const f = fakeBb({ settings: { dailyCron: cron, hourlyCron: "", weeklyCron: "" }, kv: { "cron:daily": cron } });
   await plugin(f.bb as never);
   f.kv.set("thread:daily", "thr_daily");
   f.kv.set("dispatches:daily", [{ at: new Date(Date.now() - 24 * 60 * MIN + 5 * MIN).toISOString(), threadId: "thr_daily", trigger: "schedule" }]);
@@ -132,14 +157,22 @@ test("server#4 a tick missed across a reload is caught up on load", async () => 
   assert.match((f.calls["threads.send"]![0]![0] as { input: { text: string }[] }).input[0]!.text, /^\[Pulse catch-up daily run · /);
 });
 
-test("server#4 no catch-up when the tick already ran, or on a fresh install", async () => {
-  const ran = fakeBb({ settings: { dailyCron: cronAt(-10), hourlyCron: "", weeklyCron: "" } });
+test("server#4 no catch-up when the tick already ran, on a fresh install, or right after a schedule change", async () => {
+  const cron = cronAt(-10);
+  const changed = fakeBb({ settings: { dailyCron: cron, hourlyCron: "", weeklyCron: "" }, kv: { "cron:daily": "0 16 * * *" } });
+  await plugin(changed.bb as never);
+  changed.kv.set("thread:daily", "thr_daily");
+  changed.kv.set("dispatches:daily", [{ at: new Date(Date.now() - 24 * 60 * MIN + 5 * MIN).toISOString(), threadId: "thr_daily", trigger: "schedule" }]);
+  await changed.startServices();
+  assert.equal(changed.count("threads.send"), 0, "a tick under the new schedule was never due under the old one");
+  assert.equal(changed.kv.get("cron:daily"), cron, "the next load compares against this schedule");
+  const ran = fakeBb({ settings: { dailyCron: cron, hourlyCron: "", weeklyCron: "" }, kv: { "cron:daily": cron } });
   await plugin(ran.bb as never);
   ran.kv.set("thread:daily", "thr_daily");
   ran.kv.set("dispatches:daily", [{ at: new Date(Date.now() - 9 * MIN).toISOString(), threadId: "thr_daily", trigger: "schedule" }]);
   await ran.startServices();
   assert.equal(ran.count("threads.send"), 0);
-  const fresh = fakeBb({ settings: { dailyCron: cronAt(-10), hourlyCron: "", weeklyCron: "" } });
+  const fresh = fakeBb({ settings: { dailyCron: cron, hourlyCron: "", weeklyCron: "" }, kv: { "cron:daily": cron } });
   await plugin(fresh.bb as never);
   await fresh.startServices();
   assert.equal(fresh.count("threads.send") + fresh.count("threads.spawn"), 0);

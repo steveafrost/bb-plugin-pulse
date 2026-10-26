@@ -10,9 +10,9 @@ type Thread = { id: string; status: string; createdAt: number; archivedAt: numbe
 
 export const MIN = 60_000;
 
-export function fakeBb({ threads: seed = {}, overrides = {}, settings: initial = {} }: { threads?: Record<string, Partial<Thread>>; overrides?: Record<string, Fn>; settings?: Record<string, unknown> } = {}) {
+export function fakeBb({ threads: seed = {}, overrides = {}, settings: initial = {}, kv: kvSeed = {} }: { threads?: Record<string, Partial<Thread>>; overrides?: Record<string, Fn>; settings?: Record<string, unknown>; kv?: Record<string, unknown> } = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "pulse-srv-"));
-  const kv = new Map<string, unknown>();
+  const kv = new Map<string, unknown>(Object.entries(kvSeed));
   const rpc: Record<string, Fn> = {};
   const events: Record<string, Fn[]> = {};
   const calls: Record<string, unknown[][]> = {};
@@ -54,6 +54,10 @@ export function fakeBb({ threads: seed = {}, overrides = {}, settings: initial =
     "threads.list": () => [],
     "threads.experimental_listPluginMetadata": () => ({ threads: [] }),
     "queued.list": ({ threadId }: { threadId: string }) => queues.get(threadId) ?? [],
+    "queued.delete": ({ threadId, queuedMessageId }: { threadId: string; queuedMessageId: string }) => {
+      queues.set(threadId, (queues.get(threadId) ?? []).filter((r) => r.id !== queuedMessageId));
+      return {};
+    },
     "queued.update": ({ threadId, queuedMessageId, input }: { threadId: string; queuedMessageId: string; input: { text: string }[] }) => {
       const row = queues.get(threadId)?.find((r) => r.id === queuedMessageId);
       if (row) { row.content = [{ type: "text", text: input[0]!.text }]; row.updatedAt = Date.now(); }
@@ -75,7 +79,7 @@ export function fakeBb({ threads: seed = {}, overrides = {}, settings: initial =
     status: { needsConfiguration: () => undefined },
     storage: { kv: { get: async (k: string) => kv.get(k), set: async (k: string, v: unknown) => void kv.set(k, v), delete: async (k: string) => void kv.delete(k) } },
     sdk: {
-      threads: { ...threadsArea, queuedMessages: area("queued", ["list", "update"]) },
+      threads: { ...threadsArea, queuedMessages: area("queued", ["list", "update", "delete"]) },
       threadSections: { list: async () => [{ id: "sec_1", name: "Pulse" }], create: async () => ({ id: "sec_1" }) },
       plugins: { callRpc: async () => ({}) },
     },
