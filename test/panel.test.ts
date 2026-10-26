@@ -73,6 +73,20 @@ test("binks: an error that names no source needs a later run that read everythin
   assert.equal(fixedLater(tgw, [slack, tgw]), slack);
 });
 
+test("binks: a fixed newer failure doesn't hide an older one that is still broken", () => {
+  const seen = run({ finishedAt: "2026-10-25T08:00:00Z", sources: ["slack", "calendar"] });
+  const calendar = run({ run: "daily", finishedAt: "2026-10-25T21:30:00Z", sources: ["slack"], errors: ["calendar: 401"] });
+  const slack = run({ finishedAt: "2026-10-26T09:00:00Z", sources: ["calendar"], errors: ["slack: token expired"] });
+  const slackFixed = run({ finishedAt: "2026-10-26T10:00:00Z", sources: ["slack"] });
+  const autos = [auto(), auto({ run: "daily", label: "Daily" })];
+  const p = runProblem({ recentRuns: [slackFixed, slack, calendar, seen], automations: autos });
+  assert.equal(p?.kind, "errors");
+  assert.equal((p as { run: { finishedAt: string } }).run.finishedAt, calendar.finishedAt);
+  // Once a run reads Calendar cleanly too, nothing is left to warn about.
+  const calendarFixed = run({ finishedAt: "2026-10-26T11:00:00Z", sources: ["calendar"] });
+  assert.equal(runProblem({ recentRuns: [calendarFixed, slackFixed, slack, calendar, seen], automations: autos }), null);
+});
+
 test("server improvement 1: run failures, refused schedules and overdue runs surface in the panel", () => {
   assert.equal(runProblem({ recentRuns: [], automations: [auto({ scheduleError: "Constraint error" })] })?.kind, "schedule");
   const failed = runProblem({ recentRuns: [], automations: [auto({ failure: { at: "2026-10-26T10:00:00Z", error: "thread/resume timed out", threadId: "t" } })] });

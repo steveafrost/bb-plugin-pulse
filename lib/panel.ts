@@ -98,8 +98,10 @@ export function runProblem(snapshot: Pick<PulseSnapshot, "recentRuns" | "automat
   const overdue = snapshot.automations.find((a) => a.overdue && a.lastDispatchAt);
   if (overdue) return { kind: "overdue", label: overdue.label, at: overdue.lastDispatchAt! };
   const runs = snapshot.recentRuns;
-  const bad = runs.find((r) => r.errors.length > 0);
-  if (bad && !fixedLater(bad, runs)) {
+  // The newest run with errors that no later run fixed: a fixed Slack failure must not hide an
+  // older Calendar one that is still broken.
+  const bad = runs.find((r) => r.errors.length > 0 && !fixedLater(r, runs));
+  if (bad) {
     const label = snapshot.automations.find((a) => a.run === bad.run)?.label ?? bad.run;
     return { kind: "errors", label, at: bad.finishedAt, count: bad.errors.length, run: bad };
   }
