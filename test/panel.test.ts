@@ -49,6 +49,30 @@ test("ui#6 the run warning names the run and clears once a later run reads clean
   assert.ok(runProblem({ recentRuns: [run({ finishedAt: "2026-10-26T14:22:00Z", sources: [] }), daily], automations: autos }));
 });
 
+test("binks: a clean run clears a source's error only if it read that source", () => {
+  // An earlier Hourly read Slack, so "slack" in the Daily's error names a source.
+  const earlier = run({ finishedAt: "2026-10-25T20:00:00Z", sources: ["slack", "gmail"] });
+  const daily = run({ run: "daily", finishedAt: "2026-10-25T21:30:00Z", sources: ["gmail"], errors: ["slack: token expired"] });
+  const gmailOnly = run({ finishedAt: "2026-10-26T09:00:00Z", sources: ["gmail"] });
+  const withSlack = run({ finishedAt: "2026-10-26T10:00:00Z", sources: ["Slack", "gmail"] });
+  const autos = [auto(), auto({ run: "daily", label: "Daily" })];
+  assert.equal(fixedLater(daily, [gmailOnly, daily, earlier]), undefined);
+  assert.equal(runProblem({ recentRuns: [gmailOnly, daily, earlier], automations: autos })?.kind, "errors");
+  assert.equal(fixedLater(daily, [withSlack, gmailOnly, daily, earlier]), withSlack);
+  assert.equal(runProblem({ recentRuns: [withSlack, gmailOnly, daily, earlier], automations: autos }), null);
+});
+
+test("binks: an error that names no source needs a later run that read everything the failed run read", () => {
+  const daily = run({ run: "daily", finishedAt: "2026-10-25T21:30:00Z", sources: ["slack", "calendar"], errors: ["CLI missing"] });
+  assert.equal(fixedLater(daily, [run({ finishedAt: "2026-10-26T09:00:00Z", sources: ["slack"] }), daily]), undefined);
+  const both = run({ finishedAt: "2026-10-26T10:00:00Z", sources: ["calendar", "slack", "gmail"] });
+  assert.equal(fixedLater(daily, [both, daily]), both);
+  // "tgw" (Tool Gateway) is not a source any run reads, so it doesn't pin the warning forever.
+  const tgw = run({ run: "daily", finishedAt: "2026-10-25T21:30:00Z", sources: ["slack"], errors: ["tgw: Token expired"] });
+  const slack = run({ finishedAt: "2026-10-26T09:00:00Z", sources: ["slack"] });
+  assert.equal(fixedLater(tgw, [slack, tgw]), slack);
+});
+
 test("server improvement 1: run failures, refused schedules and overdue runs surface in the panel", () => {
   assert.equal(runProblem({ recentRuns: [], automations: [auto({ scheduleError: "Constraint error" })] })?.kind, "schedule");
   const failed = runProblem({ recentRuns: [], automations: [auto({ failure: { at: "2026-10-26T10:00:00Z", error: "thread/resume timed out", threadId: "t" } })] });

@@ -47,9 +47,35 @@ export function boardSummary(items: PulseItem[], seenRef: string | null) {
   };
 }
 
-/** A later run that read sources with no errors: it shows an earlier failure is behind us. */
+/**
+ * The sources a run's errors name: an error starts with or mentions a source some run has read
+ * ("slack: token expired"). A source that failed is not in its own run's `sources`, so the names
+ * come from every run in the list; one no listed run has read can't be recognised, and the error
+ * then counts as naming none. A prefix like "tgw:" that no run reads names nothing.
+ */
+export function failedSources(run: PulseRun, runs: PulseRun[]): string[] {
+  const known = new Set(runs.flatMap((r) => r.sources).map((s) => s.toLowerCase()));
+  const named = new Set<string>();
+  for (const error of run.errors) {
+    const words = error.toLowerCase().split(/[^a-z0-9_-]+/);
+    for (const source of known) if (words.includes(source)) named.add(source);
+  }
+  return [...named];
+}
+
+/**
+ * A later run with no errors that shows an earlier failure is behind us: it read every source
+ * the errors name or, when they name none, every source the failed run read. A clean run that
+ * read only Gmail says nothing about a Slack failure.
+ */
 export function fixedLater(run: PulseRun, runs: PulseRun[]): PulseRun | undefined {
-  return runs.find((r) => r.finishedAt > run.finishedAt && r.errors.length === 0 && r.sources.length > 0);
+  const named = failedSources(run, runs);
+  const needed = named.length ? named : run.sources.map((s) => s.toLowerCase());
+  return runs.find((r) => {
+    if (!(r.finishedAt > run.finishedAt) || r.errors.length > 0 || r.sources.length === 0) return false;
+    const read = new Set(r.sources.map((s) => s.toLowerCase()));
+    return needed.every((s) => read.has(s));
+  });
 }
 
 export type RunProblem =
@@ -60,8 +86,8 @@ export type RunProblem =
 
 /**
  * The one problem worth a warning in the title bar, named by run and age, or null. A run's errors
- * stop counting once a later run reads sources cleanly, so an old Daily failure doesn't keep the
- * board looking broken all day.
+ * stop counting once a later run reads the failed sources cleanly (see `fixedLater`), so an old
+ * Daily failure doesn't keep the board looking broken all day.
  */
 export function runProblem(snapshot: Pick<PulseSnapshot, "recentRuns" | "automations">): RunProblem | null {
   for (const a of snapshot.automations) {
