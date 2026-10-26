@@ -72,7 +72,7 @@ test("reopening clears the old resolution so a later close doesn't reuse it", ()
 test("recent runs know when the previous same-name run finished, even outside the recent slice", () => {
   const h = home();
   store.logRun({ run: "weekly", summary: "w1" }, h);
-  for (let i = 0; i < 12; i++) store.logRun({ run: "hourly", summary: `h${i}` }, h);
+  for (let i = 0; i < store.RECENT_RUNS; i++) store.logRun({ run: "hourly", summary: `h${i}` }, h);
   store.logRun({ run: "weekly", summary: "w2" }, h);
   const runs = store.snapshot(h).recentRuns;
   const w2 = runs.find((r) => r.summary === "w2");

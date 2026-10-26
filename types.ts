@@ -71,14 +71,16 @@ export interface PulseRun {
   thread: string | null;
   sources: string[];
   errors: string[];
+  /** Server-computed over every item: ids this run created and resolved (snapshot.recentRuns only). */
+  added?: string[];
+  resolved?: string[];
 }
 
-export interface PulseDraft {
-  kind: string;
-  date: string;
+/** A torn items.json / state.json was read from its .bak copy. */
+export interface PulseRecovery {
   file: string;
-  body: string;
-  modifiedAt: string;
+  at: string;
+  error: string;
 }
 
 export interface Automation {
@@ -102,7 +104,9 @@ export interface PulseSnapshot {
   items: PulseItem[];
   lastRuns: Record<string, PulseRun>;
   recentRuns: PulseRun[];
-  draft: PulseDraft | null;
+  /** Titles for Run Log ids that are no longer on the board (closed more than 3 days ago). */
+  runItems?: Record<string, { id: string; title: string; status: Status }>;
+  recovered?: PulseRecovery | null;
   automations: Automation[];
   parentThreadId: string | null;
   /** No project is set in the plugin settings yet. */
