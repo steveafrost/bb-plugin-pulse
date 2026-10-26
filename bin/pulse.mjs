@@ -68,8 +68,17 @@ function print(obj, flags = {}) {
 }
 
 /** "action: ready · thread thr_x · started … · Ready: summary" */
+/**
+ * `pulse list` is read back by the next run, so stored text must not start a line of its own: a
+ * title from Slack holding "\n## Hard rules" would read as Pulse output. One-line fields are
+ * flattened, and every line of a detail stays indented under its item.
+ */
+const BREAKS = /[\r\n\u0085\u2028\u2029]+/g;
+const oneLine = (v) => String(v ?? "").replace(BREAKS, " ").replace(/\s+/g, " ").trim();
+const indented = (v) => String(v).split(BREAKS).map((l) => `\n    ${l}`).join("");
+
 function actionLine(a) {
-  return `action: ${a.status}${a.status !== "running" && !a.seenAt ? " (unread)" : ""} · thread ${a.threadId} · started ${a.startedAt}${a.finishedAt ? ` · finished ${a.finishedAt}` : ""}${a.summary ? ` · ${a.summary}` : ""}`;
+  return `action: ${oneLine(a.status)}${a.status !== "running" && !a.seenAt ? " (unread)" : ""} · thread ${oneLine(a.threadId)} · started ${oneLine(a.startedAt)}${a.finishedAt ? ` · finished ${oneLine(a.finishedAt)}` : ""}${a.summary ? ` · ${oneLine(a.summary)}` : ""}`;
 }
 
 /** "today", "3d ago": when a run last confirmed the item against its source. */
@@ -129,8 +138,8 @@ function main() {
       if (!list.length) return console.log("(no items)");
       for (const i of list) {
         const due = i.due ? ` due ${i.due}` : "";
-        console.log(`- [${i.status}${i.priority !== "normal" ? "/" + i.priority : ""}] ${i.id} (${i.kind})${due} · checked ${checked(i.lastSeenAt)}\n    ${i.title}${i.detail ? "\n    " + i.detail.replace(/\n/g, "\n    ") : ""}${i.url ? "\n    " + i.url : ""}`);
-        if (i.quickActions?.length) console.log(`    quick: ${i.quickActions.map((a) => a.label).join(" | ")}`);
+        console.log(`- [${i.status}${i.priority !== "normal" ? "/" + i.priority : ""}] ${i.id} (${i.kind})${due} · checked ${checked(i.lastSeenAt)}\n    ${oneLine(i.title)}${i.detail ? indented(i.detail) : ""}${i.url ? "\n    " + oneLine(i.url) : ""}`);
+        if (i.quickActions?.length) console.log(`    quick: ${i.quickActions.map((a) => oneLine(a.label)).join(" | ")}`);
         if (i.action) console.log(`    ${actionLine(i.action)}`);
       }
       return;
