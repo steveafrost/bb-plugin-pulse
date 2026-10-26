@@ -225,9 +225,16 @@ export default async function plugin(bb: BbPluginApi) {
     probeCache.set(id, { at: Date.now(), state });
     return state;
   };
+  /**
+   * A pinned thread whose send failed permanently. Its probe can still look healthy (an
+   * unavailable environment isn't archived), so without this every run would pick it again and
+   * orphan a fresh replacement. Keyed by id, so changing the setting retries the new pin.
+   */
+  const deadPinnedKey = (name: RunName) => `deadPinned:${name}`;
   const resolveRunThread = async (name: RunName, { prune = false } = {}): Promise<string | null> => {
     const pinned = config.threads[name];
-    if (pinned && (await probe(pinned, prune)) !== "dead") return pinned;
+    const pinnedDead = pinned !== "" && (await bb.storage.kv.get<string>(deadPinnedKey(name))) === pinned;
+    if (pinned && !pinnedDead && (await probe(pinned, prune)) !== "dead") return pinned;
     const cached = await storedRunThread(name);
     if (!cached) return null;
     const state = await probe(cached, prune);
@@ -305,7 +312,14 @@ export default async function plugin(bb: BbPluginApi) {
         // environment reclaimed). Retrying the same id can only fail again, so drop it and
         // spawn a replacement — otherwise this schedule stays wedged until a human intervenes.
         if (!deadThread(cause)) throw cause;
-        bb.log.warn(`${name} run thread ${existing} became unusable (${cause instanceof Error ? cause.message : String(cause)}); starting a new one`);
+        const reason = cause instanceof Error ? cause.message : String(cause);
+        if (existing === config.threads[name]) {
+          // The pin comes from settings, so it can't be forgotten; skip it until the setting changes.
+          bb.log.warn(`pinned ${name} run thread ${existing} is unusable (${reason}); using a new thread until the ${RUN_LABEL[name]} thread setting changes`);
+          await bb.storage.kv.set(deadPinnedKey(name), existing);
+        } else {
+          bb.log.warn(`${name} run thread ${existing} became unusable (${reason}); starting a new one`);
+        }
         await forgetRunThread(name);
       }
     }

@@ -90,6 +90,27 @@ test("a run thread that dies between probe and send is replaced, not wedged", as
   assert.equal(f.count("threads.spawn"), 1);
 });
 
+test("a pinned run thread whose send fails for good is skipped on later runs", async () => {
+  const f = fakeBb({
+    send: ({ threadId }: { threadId: string }) => {
+      if (threadId === "thr_pinned") throw new Error("409: environment is unavailable");
+      return {};
+    },
+  });
+  await plugin(f.bb as never);
+  f.changeSettings({ hourlyThread: "thr_pinned" });
+  const first = await f.rpc.pulse_run_now!({ run: "hourly" });
+  assert.equal(first.threadId, "thr_new");
+  const second = await f.rpc.pulse_run_now!({ run: "hourly" });
+  assert.equal(second.threadId, "thr_new", "the replacement is reused, not another fresh thread");
+  assert.equal(f.count("threads.spawn"), 1);
+  assert.deepEqual(f.calls["threads.send"]?.map(([a]) => (a as { threadId: string }).threadId), ["thr_pinned", "thr_new"]);
+  // Pinning a different thread tries the new pin.
+  f.changeSettings({ hourlyThread: "thr_other" });
+  const third = await f.rpc.pulse_run_now!({ run: "hourly" });
+  assert.equal(third.threadId, "thr_other");
+});
+
 test("an action thread that can't be recorded is stopped and archived, and the click fails", async () => {
   const f = fakeBb({
     // The item disappears while the thread spawns, so recording the action fails.
