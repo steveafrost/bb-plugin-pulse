@@ -204,6 +204,33 @@ export default async function plugin(bb: BbPluginApi) {
     }
   };
   writeLauncher();
+  /**
+   * Runs used to keep tool tips in one memory file each, so a workaround Daily found never reached
+   * Hourly. Since 0.1.14 every run reads memory/tips.md; seed it once from the old per-run files
+   * (which stay, Weekly still keeps its context in weekly.md).
+   */
+  const seedTips = () => {
+    const dir = path.join(home, "memory");
+    const tips = path.join(dir, "tips.md");
+    try {
+      if (fs.existsSync(tips)) return;
+      const lines: string[] = [];
+      for (const run of ["hourly", "daily"] as const) {
+        const file = path.join(dir, `${run}.md`);
+        if (!fs.existsSync(file)) continue;
+        for (const line of fs.readFileSync(file, "utf8").split("\n")) {
+          const t = line.trim();
+          if (t && !t.startsWith("#") && !lines.includes(t)) lines.push(t);
+        }
+      }
+      if (!lines.length) return;
+      fs.writeFileSync(tips, `# Pulse tool tips (shared by every run; newest last, keep under 40 lines)\n${lines.slice(-40).join("\n")}\n`);
+      bb.log.info(`seeded ${tips} from the per-run memory files`);
+    } catch (error) {
+      bb.log.warn(`could not seed ${tips}: ${message(error)}`);
+    }
+  };
+  seedTips();
   const promptContext = (startedAt?: string): PromptContext => ({
     cli: cliCommand(), user: config.user, timeZone: config.timeZone, memoryDir: path.join(home, "memory"),
     sources: config.sources, instructions: config.instructions, ...(startedAt ? { startedAt } : {}),

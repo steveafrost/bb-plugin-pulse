@@ -2,13 +2,13 @@
 
 A panel in bb's nav rail that lists what needs you from Slack, Gmail and Calendar, sorted into **Now** (high priority or due today), **Next**, **Later** and **Nice to Know** (FYIs that need no action). Filter by source, and anything new since you last looked gets an outline.
 
-- **Done, Snooze and Dismiss stick.** A later run never re-raises an item you handled unless it finds new activity and records why. Closed items stay one click away to reopen.
+- **Done, Snooze and Dismiss stick.** A later run never re-raises an item you handled unless it finds new activity and records why. Every action has an Undo, and closed items stay one click away to reopen. The board works from the keyboard too (`?` lists the keys).
 - **Quick actions.** Runs attach up to three likely resolutions per item, such as "Decline meeting" or "Reply yes", with the message already written. A click copies the text and opens the source. Nothing is ever sent for you.
 - **Agent threads.** The robot button starts a thread that does the work up to the point of review, such as drafting the weekly update someone asked for. The card shows Working, then Ready with the thread's one-line summary.
 
 ## How it works
 
-Pulse schedules three capture runs: Hourly (every two hours), Daily (4 PM) and Weekly (Friday 3 PM), each with its own cron. Each run sends a prompt to its own bb thread, created on the first run in a "Pulse" sidebar section. The agent reads your sources and writes items through a bundled CLI into a small local store, so the panel updates live as the run works. **Run now** and the run menu use the same path, and each schedule can be paused from the menu.
+Pulse schedules three capture runs: Hourly (every two hours, 8 AM to 6 PM on weekdays), Daily (4:30 PM on weekdays) and Weekly (Friday 3 PM), each with its own cron. An Hourly slot close to a Daily or Weekly run is skipped, a run missed while bb was quit is caught up, and a failed run is retried once and then shown in the run menu. Each run sends a prompt to its own bb thread, created on the first run in a "Pulse" sidebar section. The agent reads your sources and writes items through a bundled CLI into a small local store, so the panel updates live as the run works. **Run now** and the run menu use the same path, and each schedule can be paused from the menu.
 
 Items carry stable source IDs, so a run updates an existing item instead of adding a duplicate. Agents write only through the CLI, which applies the same validation and sticky-state rules as the panel.
 

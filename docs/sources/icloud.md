@@ -190,8 +190,10 @@ iCloud Calendar: run `~/.config/pulse/icloud-cal-sync.sh` first (wrapping
 `vdirsyncer -v ERROR sync mypair`; incremental, ~2s), then read with `khal list today 14d` (add
 `--json` for machine-readable). Read only; never create, edit or delete events.
 
-Use item IDs of the form `gmail:<message-id>` for mail and `calendar:<event-uid>` for events, so the
-panel's source filters stay meaningful.
+Use item IDs of the form `gmail:<root message-id>` for mail, where the root is the first id in the
+message's `References` header (else `In-Reply-To`, else its own `Message-ID`), so every reply in a
+thread updates the same item. Use `calendar:<event-uid>` for events. The prefixes keep the panel's
+source filters meaningful.
 ```
 
 ## Rate limits

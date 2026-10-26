@@ -29,18 +29,34 @@ store; the panel sorts them into **Now**, **Next**, **Later** and **Nice to Know
    [iCloud](docs/sources/icloud.md), [Google Workspace](docs/sources/google.md) and
    [Microsoft 365](docs/sources/microsoft.md), plus the ID-prefix and read-only rules that apply to
    any provider.
-4. Optional: your first name, house rules, a model, schedules, and skill rules for agent threads
-   (`skill-name | why | regex`, one per line).
+4. Optional: your first name, house rules, a model, reasoning level and **permission mode** for
+   runs, the three schedules, a time zone, a store directory, a sidebar section, existing threads
+   to pin runs to, and skill rules for agent threads (`skill-name | why | regex`, one per line).
 5. `bb plugin reload pulse`, then press **Run now**.
 
-Runs call the bundled CLI from a shell, so the run thread needs permission to run commands.
+Runs call the bundled CLI from a shell, so the run thread needs permission to run commands: set
+**Permission mode for capture runs** if your thread default asks first.
+
+The default schedules are Hourly every two hours from 8 AM to 6 PM on weekdays, Daily at 4:30 PM on
+weekdays and Weekly at 3 PM on Fridays (server time). An Hourly slot within 45 minutes of a Daily or
+Weekly run is skipped, since that run covers it. A run that was due while bb was quit or Pulse was
+reloading runs when Pulse loads again (within a day). A run whose turn fails is retried once five
+minutes later; after that, the run menu shows the failure, and a sent run that never logs shows as
+overdue and in the Run Log as "didn't finish". Run threads are replaced with fresh ones once a day.
 
 ## Store and CLI
 
 Items live in `$PULSE_HOME` (default `~/.config/pulse`, or the store directory setting):
-`items.json`, `runs.jsonl`, `state.json`. Agents write only through the CLI
-(`node bin/pulse.mjs help`); the server and CLI share `lib/store.mjs`, so the same validation
-and sticky-state rules apply to both. The panel updates live as runs write.
+`items.json`, `runs.jsonl`, `state.json`, each JSON file with a `.bak` copy of its last good write,
+plus `memory/tips.md` (tool tips every run shares) and `bin/pulse`, a launcher for the bundled CLI
+that the plugin writes on load. Agents write only through the CLI (`pulse help`); the server and CLI
+share `lib/store.mjs`, so the same validation and sticky-state rules apply to both. The panel
+updates live as runs write. `pulse doctor` checks the files and `pulse doctor --fix` restores a
+torn one from its `.bak`. Housekeeping wakes expired snoozes, ages out FYIs after 3 days, and moves
+items closed more than 90 days ago to `items-archive.jsonl`.
+
+The board is keyboard-driven too: `j`/`k` move, `Enter` opens the source, `e` Done, `s` Snooze,
+`x` Dismiss, `a` agent thread, `.` quick actions, `i` details, `z` Undo, `?` the list.
 
 ## Develop
 

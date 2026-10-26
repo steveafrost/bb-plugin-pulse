@@ -22,12 +22,13 @@ These apply no matter which tools you name.
 1. **Say "read only" explicitly, and list the verbs.** Pulse is a triage board; nothing should ever
    be sent, posted, reacted to, flagged, moved or deleted. Name the forbidden verbs rather than
    trusting a generic "read only".
-2. **Tell the agent what to do when a source is down.** The standard tail is:
-   `If a source is unavailable, skip it and report it with --errors.` Without it, a run tends to
-   invent plausible items instead of reporting the failure.
-3. **Describe the window to read**, in the tool's own terms. Pulse already tells the agent to use
-   "since the last run of this name, with a small overlap", but tool-specific hints help — especially
-   when the obvious query doesn't work (see iCloud's auto-archive trap below).
+2. **Describe only the sources you use.** Pulse tells every run that a source your text doesn't
+   describe is not set up, and that a described source which fails goes in `--errors` with the
+   tool's own message. Workarounds a run finds land in `memory/tips.md`, which every run reads.
+3. **Describe the window to read**, in the tool's own terms. Pulse already tells the agent to start
+   each source at the last run that read it cleanly (`pulse runs --last-good <source>`), with a
+   small overlap, but tool-specific hints help — especially when the obvious query doesn't work
+   (see iCloud's auto-archive trap).
 4. **Use the source ID prefixes the panel expects.** Item IDs must look like `<source>:<stable-id>`
    and the prefix decides the `source` filter chip:
 
@@ -43,8 +44,9 @@ These apply no matter which tools you name.
    Any prefix outside the list still validates, but the item lands under **Other**. That is why
    iCloud mail below uses `gmail:` even though it is not Gmail: it keeps the chip meaningful.
 5. **Give the stable ID, not a random one.** Stability is what stops a run from re-raising an item
-   you already handled. Use the provider's own identifier — an IMAP `message-id`, a CalDAV event
-   `UID`, a Slack `thread_ts`, not a hash of the subject line.
+   you already handled. Use the provider's own identifier for the *thread*, so replies update the
+   same item: a Gmail `threadId`, an IMAP thread's root `message-id` (first `References` entry),
+   a CalDAV event `UID`, a Slack `thread_ts` — not a per-message id or a hash of the subject line.
 
 ## Contributing a recipe
 
