@@ -53,6 +53,8 @@ const STATUS_FOR: Record<ItemAction, string> = { done: "done", dismiss: "dismiss
 const MINUTE = 60_000;
 const RECONCILE_MS = 2 * MINUTE;
 const PROBE_TTL_MS = 30_000;
+/** A memory line that reads as a tool tip or workaround, for seeding tips.md from older files. */
+const TIP_LINE = /\btips?\b|workaround|`| --[a-z]|\b(needs|takes|wants|prefer)\b|\b(TGW|MCP|CLI)\b|devx|codemode|token|validation/i;
 /** A Daily or Weekly run this close to an Hourly slot does the Hourly's work, so the Hourly skips. */
 const COLLIDE_MS = 45 * MINUTE;
 /** A dispatched run with no `pulse log` after this long is overdue (it died, or never started). */
@@ -206,7 +208,7 @@ export default async function plugin(bb: BbPluginApi) {
   writeLauncher();
   /**
    * Runs used to keep tool tips in one memory file each, so a workaround Daily found never reached
-   * Hourly. Since 0.1.14 every run reads memory/tips.md; seed it once from the old per-run files
+   * Hourly. Since 0.1.15 every run reads memory/tips.md; seed it once from the old per-run files
    * (which stay, Weekly still keeps its context in weekly.md).
    */
   const seedTips = () => {
@@ -220,7 +222,9 @@ export default async function plugin(bb: BbPluginApi) {
         if (!fs.existsSync(file)) continue;
         for (const line of fs.readFileSync(file, "utf8").split("\n")) {
           const t = line.trim();
-          if (t && !t.startsWith("#") && !lines.includes(t)) lines.push(t);
+          // The old files mixed run journals ("Last run: …", what was flagged) with tool tips.
+          // Carry over only list or dated lines that read as a tip about a tool or a workaround.
+          if (/^(- |\d{4}-\d{2}-\d{2})/.test(t) && TIP_LINE.test(t) && !lines.includes(t)) lines.push(t);
         }
       }
       if (!lines.length) return;
@@ -682,7 +686,7 @@ export default async function plugin(bb: BbPluginApi) {
     for (const run of ["weekly", "daily", "hourly"] as const) {
       const cron = loadedCron[run];
       if (!cron || registered.get(run) !== null || (await isPaused(run))) continue;
-      if (previousCron.get(run) !== cron) continue; // first load with this schedule (or of 0.1.14)
+      if (previousCron.get(run) !== cron) continue; // first load with this schedule (or of 0.1.15)
       const tick = prevCronRun(cron, new Date(now));
       if (!tick || now - tick.getTime() > CATCH_UP_WINDOW_MS || now - tick.getTime() < CATCH_UP_GRACE_MS) continue;
       // An Hourly tick that yielded to a Daily or Weekly run at the time was skipped on purpose.

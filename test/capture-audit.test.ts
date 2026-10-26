@@ -79,11 +79,12 @@ test("capture I1 the server seeds tips.md once from the old per-run memory files
   const f = fakeBb();
   fs.mkdirSync(path.join(f.home, "memory"), { recursive: true });
   fs.writeFileSync(path.join(f.home, "memory/daily.md"), "# Daily\n2026-10-24: devx tgw needs `unset TOOL_GATEWAY_TOKEN`; gws works\n");
-  fs.writeFileSync(path.join(f.home, "memory/hourly.md"), "2026-10-16: quickActions without text need a url\n");
+  fs.writeFileSync(path.join(f.home, "memory/hourly.md"), "Last run: 2026-10-16 12:00 EDT\n\nDelta since 10:40 run. New: a DM with a `code` span and a token mention.\n- 2026-10-16: quickActions without text need a url (validation)\n- Flagged: Janice review requests #1, #2\n");
   await plugin(f.bb as never);
   const tips = fs.readFileSync(path.join(f.home, "memory/tips.md"), "utf8");
   assert.match(tips, /unset TOOL_GATEWAY_TOKEN/);
   assert.match(tips, /quickActions without text/);
+  assert.doesNotMatch(tips, /Last run|Delta since|Flagged/, "run journal lines aren't tips");
   fs.writeFileSync(path.join(f.home, "memory/tips.md"), "kept\n");
   await plugin(fakeBb({ settings: { storeDir: f.home } }).bb as never);
   assert.equal(fs.readFileSync(path.join(f.home, "memory/tips.md"), "utf8"), "kept\n");

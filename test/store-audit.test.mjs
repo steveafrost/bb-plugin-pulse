@@ -32,7 +32,7 @@ test("store#1 ten writers racing on a stale lock all land", async () => {
   for (let round = 0; round < 10; round++) {
     const h = home();
     store.upsert([{ id: "slack:seed", title: "seed" }], "hourly", h);
-    // What a crashed pre-0.1.14 writer leaves: an ownerless lock dir with an old mtime.
+    // What a crashed pre-0.1.15 writer leaves: an ownerless lock dir with an old mtime.
     fs.mkdirSync(path.join(h, ".lock"));
     const old = (Date.now() - 120_000) / 1000;
     fs.utimesSync(path.join(h, ".lock"), old, old);

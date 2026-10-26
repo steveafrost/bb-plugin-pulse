@@ -68,7 +68,7 @@ function webUrl(url: string | null | undefined): string | undefined {
 
 const isPaused = (a: Automation) => a.paused ?? a.enabled === false;
 
-/** `code` spans; tolerates a non-string (records written before 0.1.14 could hold `true`). */
+/** `code` spans; tolerates a non-string (records written before 0.1.15 could hold `true`). */
 function inlineCode(text: unknown): React.ReactNode[] {
   return String(text ?? "").split(/(`[^`]+`)/g).map((part, i) =>
     part.length > 2 && part.startsWith("`") && part.endsWith("`") ? <code key={i} className="pulse-code">{part.slice(1, -1)}</code> : part,
