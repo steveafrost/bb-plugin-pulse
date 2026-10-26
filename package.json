@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-pulse",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "type": "module",
   "private": true,
   "description": "A live board of what needs you from Slack, Gmail and Calendar, kept current by scheduled bb agent runs.",
