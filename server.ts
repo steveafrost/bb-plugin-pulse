@@ -156,8 +156,25 @@ export default async function plugin(bb: BbPluginApi) {
       timeZone: (() => { try { new Intl.DateTimeFormat("en-US", { timeZone }); return timeZone; } catch { bb.log.warn(`bad time zone "${timeZone}"`); return systemTimeZone(); } })(),
       // Absolute, so the panel and the run's shell (which runs in the project cwd) share one store.
       home: path.resolve(os.homedir(), v.storeDir.trim().replace(/^~(?=\/|$)/, os.homedir()) || store.pulseHome()),
-      threads: { hourly: v.hourlyThread.trim(), daily: v.dailyThread.trim(), weekly: v.weeklyThread.trim() } as Record<RunName, string>,
+      ...pinsOf({ hourly: v.hourlyThread.trim(), daily: v.dailyThread.trim(), weekly: v.weeklyThread.trim() }),
     };
+  };
+  /**
+   * One run per pinned thread. Failure attribution and queued-prompt replacement assume a thread
+   * has one owner, so a pin already taken by an earlier run is dropped (that run keeps it) and the
+   * later run falls back to its own thread.
+   */
+  const pinsOf = (raw: Record<RunName, string>) => {
+    const threads = { ...raw };
+    const sharedWith: Partial<Record<RunName, RunName>> = {};
+    RUN_NAMES.forEach((run, i) => {
+      const owner = RUN_NAMES.slice(0, i).find((r) => threads[r] !== "" && threads[r] === raw[run]);
+      if (raw[run] === "" || !owner) return;
+      threads[run] = "";
+      sharedWith[run] = owner;
+      bb.log.warn(`${run} thread setting ${raw[run]} is already the ${owner} thread; ${run} runs use Pulse's own thread`);
+    });
+    return { threads, sharedWith };
   };
   const deadPinnedKey = (name: RunName) => `deadPinned:${name}`;
   let pinClears: Promise<void> = Promise.resolve();
@@ -454,7 +471,8 @@ export default async function plugin(bb: BbPluginApi) {
           if (now - Date.parse(d.at) < 3 * 86_400_000 && unfinished(d, sent[i + 1], ofRun, now)) missedRuns.push({ run, label: RUN_LABEL[run], ...d });
         });
         const pinned = config.threads[run];
-        const pinState: Automation["pinState"] = !pinned ? null
+        const pinState: Automation["pinState"] = config.sharedWith[run] ? "shared"
+          : !pinned ? null
           : (await bb.storage.kv.get<string>(deadPinnedKey(run))) === pinned ? "skipped"
           : (await probe(pinned, false)).state === "dead" ? "dead" : "ok";
         const next = enabled ? nextCronRun(cron) : null;

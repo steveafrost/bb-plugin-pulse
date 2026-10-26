@@ -471,6 +471,7 @@ function automationNote(a: Automation, r: PulseRun | undefined): { text: string;
   if (a.failure) return { text: `last run failed ${ago(a.failure.at)}: ${a.failure.error}`, tone: "fail" };
   if (a.overdue) return { text: `sent ${ago(a.lastDispatchAt)}, no log yet`, tone: "warn" };
   if (a.pinState === "dead") return { text: "the thread setting points to an archived thread; clear it in settings", tone: "warn" };
+  if (a.pinState === "shared") return { text: "another run already uses that thread; using Pulse's own thread", tone: "warn" };
   if (a.pinState === "skipped") return { text: "the thread setting can't take runs; using Pulse's own thread", tone: "warn" };
   const next = when(a.nextRunAt);
   const timing = !a.schedule ? "off" : isPaused(a) ? "paused" : next ? `next ${next.text}` : "";

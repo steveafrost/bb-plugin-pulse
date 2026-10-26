@@ -377,3 +377,16 @@ test("binks recording a dispatch notifies the panel", async () => {
   await new Promise((r) => setTimeout(r, 300));
   assert.ok(f.count("realtime.publish") > before, "a queued-row dispatch publishes a change");
 });
+
+test("binks two runs can't pin the same thread: the earlier run keeps it, the later uses its own", async () => {
+  const f = fakeBb({ threads: { thr_mine: { status: "idle" } } });
+  await plugin(f.bb as never);
+  f.changeSettings({ dailyThread: "thr_mine", weeklyThread: "thr_mine" });
+  assert.equal((await f.automation("daily")).pinState, "ok");
+  assert.equal((await f.automation("weekly")).pinState, "shared");
+  assert.ok(f.warns.some((w) => /weekly thread setting thr_mine is already the daily thread/.test(w)));
+  assert.equal((await f.rpc.pulse_run_now!({ run: "daily" })).threadId, "thr_mine");
+  const weekly = await f.rpc.pulse_run_now!({ run: "weekly" });
+  assert.notEqual(weekly.threadId, "thr_mine", "weekly never sends to (or replaces a queued run in) the daily pin");
+  assert.equal(f.count("threads.spawn"), 1);
+});

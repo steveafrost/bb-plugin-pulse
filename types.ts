@@ -105,7 +105,8 @@ export interface Automation {
   overdue?: boolean;
   lastDispatchAt?: string | null;
   /** The "Existing thread for … runs" setting: null when empty; dead = archived/gone; skipped = its send failed for good. */
-  pinState?: "ok" | "dead" | "skipped" | null;
+  /** `shared`: another run already pins that thread, so this run uses its own. */
+  pinState?: "ok" | "dead" | "skipped" | "shared" | null;
 }
 
 /** A prompt Pulse sent to a run thread. */
