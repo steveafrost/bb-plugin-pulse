@@ -29,3 +29,23 @@ export function horizonOf(item: Pick<PulseItem, "kind" | "status" | "priority" |
   const seen = Date.parse(item.firstSeenAt);
   return Number.isFinite(seen) && now.getTime() - seen >= LOW_PRIORITY_AGING_DAYS * DAY_MS ? "next" : "later";
 }
+
+/** One line for an item's detail view: why it sits where it does ("Low priority, open 10 days → Next"). */
+export function horizonReason(item: Pick<PulseItem, "kind" | "status" | "priority" | "due" | "firstSeenAt">, now = new Date()): string {
+  const h = horizonOf(item, now);
+  const label = { now: "Now", next: "Next", later: "Later", info: "Nice to Know" }[h];
+  const due = item.due ? Date.parse(item.due) : NaN;
+  const days = Math.floor((now.getTime() - Date.parse(item.firstSeenAt)) / DAY_MS);
+  const why =
+    item.kind === "fyi" ? "FYI, no action needed"
+    : item.status === "waiting" ? "Waiting on others"
+    : item.status === "snoozed" ? "Snoozed"
+    : item.priority === "high" ? "High priority"
+    : Number.isFinite(due) && due < now.getTime() ? "Overdue"
+    : Number.isFinite(due) && due < midnightAfter(now, 1) ? "Due today"
+    : Number.isFinite(due) && due < midnightAfter(now, 2) ? "Due tomorrow"
+    : Number.isFinite(due) ? "Due after tomorrow"
+    : item.priority === "low" ? (h === "next" ? `Low priority, open ${days} day${days === 1 ? "" : "s"}` : "Low priority, no date")
+    : "No due date";
+  return `${why} → ${label}`;
+}
