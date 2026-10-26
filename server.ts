@@ -129,12 +129,18 @@ export default async function plugin(bb: BbPluginApi) {
       threads: { hourly: v.hourlyThread.trim(), daily: v.dailyThread.trim(), weekly: v.weeklyThread.trim() } as Record<RunName, string>,
     };
   };
+  const deadPinnedKey = (name: RunName) => `deadPinned:${name}`;
+  let pinClears: Promise<void> = Promise.resolve();
   let config = readConfig(await settings.get());
   const home = config.home;
   const loadedCron = { ...config.cron };
   settings.onChange((next) => {
     const prev = config;
     config = readConfig(next);
+    // A pin that was marked dead gets a fresh try as soon as its setting changes, even if it
+    // later changes back to the same id (the user may have repaired that thread).
+    const cleared = RUN_NAMES.filter((r) => config.threads[r] !== prev.threads[r]).map((r) => bb.storage.kv.delete(deadPinnedKey(r)));
+    if (cleared.length) pinClears = Promise.all(cleared).then(() => undefined, () => undefined);
     if (config.home !== prev.home || RUN_NAMES.some((r) => config.cron[r] !== prev.cron[r])) {
       bb.log.info("store directory or schedules changed; run `bb plugin reload` to apply");
     }
@@ -228,10 +234,11 @@ export default async function plugin(bb: BbPluginApi) {
   /**
    * A pinned thread whose send failed permanently. Its probe can still look healthy (an
    * unavailable environment isn't archived), so without this every run would pick it again and
-   * orphan a fresh replacement. Keyed by id, so changing the setting retries the new pin.
+   * orphan a fresh replacement. Keyed by id and cleared on any change to the setting (see
+   * settings.onChange), so editing the pin, even back to the same id, retries it.
    */
-  const deadPinnedKey = (name: RunName) => `deadPinned:${name}`;
   const resolveRunThread = async (name: RunName, { prune = false } = {}): Promise<string | null> => {
+    await pinClears;
     const pinned = config.threads[name];
     const pinnedDead = pinned !== "" && (await bb.storage.kv.get<string>(deadPinnedKey(name))) === pinned;
     if (pinned && !pinnedDead && (await probe(pinned, prune)) !== "dead") return pinned;

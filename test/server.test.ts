@@ -91,9 +91,10 @@ test("a run thread that dies between probe and send is replaced, not wedged", as
 });
 
 test("a pinned run thread whose send fails for good is skipped on later runs", async () => {
+  const send = { ok: false };
   const f = fakeBb({
     send: ({ threadId }: { threadId: string }) => {
-      if (threadId === "thr_pinned") throw new Error("409: environment is unavailable");
+      if (threadId === "thr_pinned" && !send.ok) throw new Error("409: environment is unavailable");
       return {};
     },
   });
@@ -109,6 +110,11 @@ test("a pinned run thread whose send fails for good is skipped on later runs", a
   f.changeSettings({ hourlyThread: "thr_other" });
   const third = await f.rpc.pulse_run_now!({ run: "hourly" });
   assert.equal(third.threadId, "thr_other");
+  // Changing back to a repaired pin tries it again instead of trusting the old dead marker.
+  send.ok = true;
+  f.changeSettings({ hourlyThread: "thr_pinned" });
+  const fourth = await f.rpc.pulse_run_now!({ run: "hourly" });
+  assert.equal(fourth.threadId, "thr_pinned");
 });
 
 test("an action thread that can't be recorded is stopped and archived, and the click fails", async () => {

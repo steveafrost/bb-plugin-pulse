@@ -43,7 +43,7 @@ export function actionPrompt(item: PulseItem, c: ActionContext): string {
     `- Kind: ${item.kind} · Source: ${item.source} · Priority: ${item.priority} · Status: ${item.status}`,
     `- Link: ${item.url ? quoted(item.url) : "(none)"}`,
     `- Due: ${fmtTime(item.due)}`,
-    `- Pulse id: ${item.id} (first seen ${fmtTime(item.firstSeenAt)})`,
+    `- Pulse id: ${quoted(item.id)} (first seen ${fmtTime(item.firstSeenAt)})`,
     "",
     "## Skills",
     ...(skills.length
