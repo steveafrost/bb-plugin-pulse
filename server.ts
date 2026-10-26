@@ -259,18 +259,21 @@ export default async function plugin(bb: BbPluginApi) {
     if (replace && list.length && list.at(-1)!.threadId === d.threadId) list.pop();
     list.push(d);
     await bb.storage.kv.set(dispatchKey(name), list.slice(-DISPATCH_HISTORY));
+    // lastDispatchAt, overdue and missedRuns read this, and the queued-row path writes nothing else.
+    publish();
   };
   const recordFailure = async (name: RunName, failure: RunFailure) => {
     await bb.storage.kv.set(failureKey(name), failure);
     publish();
   };
-  const lastRunOf = (name: RunName): PulseRun | undefined => {
+  const runsOf = (name: RunName): PulseRun[] => {
     try {
-      return store.readRuns(home).filter((r) => r.run === name).at(-1);
+      return store.readRuns(home).filter((r) => r.run === name);
     } catch {
-      return undefined;
+      return [];
     }
   };
+  const lastRunOf = (name: RunName): PulseRun | undefined => runsOf(name).at(-1);
 
   /**
    * A run's thread id, from plugin kv or the store's durable `runThreads` map.
@@ -409,13 +412,20 @@ export default async function plugin(bb: BbPluginApi) {
   /** Only the cron registered at load can fire; the error bb gave when it refused one. */
   const registered = new Map<RunName, string | null>();
 
-  /** Why a dispatch didn't finish, or null when a logged run covers it (or it may still be running). */
-  const unfinished = (d: RunDispatch, next: RunDispatch | undefined, runs: PulseRun[], now: number): boolean => {
+  /**
+   * Whether a logged run covers this dispatch. A log stamped with `--started` covers only the
+   * dispatch it names, so an older run that finishes after a newer prompt was queued can't hide
+   * the newer one. Only unstamped logs fall back to "finished between this dispatch and the next".
+   */
+  const covered = (d: RunDispatch, next: RunDispatch | undefined, runs: PulseRun[]): boolean => {
     const at = Date.parse(d.at);
     const until = next ? Date.parse(next.at) : Infinity;
-    const logged = runs.some((r) => r.startedAt === d.at || (Date.parse(r.finishedAt) > at && Date.parse(r.finishedAt) <= until));
-    if (logged) return false;
-    return next !== undefined || now - at > UNFINISHED_MS;
+    return runs.some((r) => r.startedAt ? r.startedAt === d.at : Date.parse(r.finishedAt) > at && Date.parse(r.finishedAt) <= until);
+  };
+  /** Whether a dispatch didn't finish: no logged run covers it, and it can't still be running. */
+  const unfinished = (d: RunDispatch, next: RunDispatch | undefined, runs: PulseRun[], now: number): boolean => {
+    if (covered(d, next, runs)) return false;
+    return next !== undefined || now - Date.parse(d.at) > UNFINISHED_MS;
   };
 
   async function loadAutomations(): Promise<{ automations: Automation[]; missedRuns: MissedRun[] }> {
@@ -439,7 +449,7 @@ export default async function plugin(bb: BbPluginApi) {
         const failure = (await bb.storage.kv.get<RunFailure>(failureKey(run))) ?? null;
         // A failure counts until a later run of this name logs.
         const currentFailure = failure && (!lastRun || failure.at > lastRun.finishedAt) ? failure : null;
-        const overdue = !!lastDispatch && (!lastRun || lastRun.finishedAt < lastDispatch.at) && now - Date.parse(lastDispatch.at) > OVERDUE_MS;
+        const overdue = !!lastDispatch && !covered(lastDispatch, undefined, ofRun) && now - Date.parse(lastDispatch.at) > OVERDUE_MS;
         sent.forEach((d, i) => {
           if (now - Date.parse(d.at) < 3 * 86_400_000 && unfinished(d, sent[i + 1], ofRun, now)) missedRuns.push({ run, label: RUN_LABEL[run], ...d });
         });
@@ -630,8 +640,7 @@ export default async function plugin(bb: BbPluginApi) {
       const next = nextCronRun(cron, new Date(now));
       if ((prev && now - prev.getTime() <= COLLIDE_MS) || (next && next.getTime() - now <= COLLIDE_MS)) return `the ${RUN_LABEL[other]} run is scheduled within 45 minutes`;
       const sent = (await dispatches(other)).at(-1);
-      const last = lastRunOf(other);
-      if (sent && (!last || last.finishedAt < sent.at) && now - Date.parse(sent.at) < UNFINISHED_MS) return `the ${RUN_LABEL[other]} run is still in progress`;
+      if (sent && !covered(sent, undefined, runsOf(other)) && now - Date.parse(sent.at) < UNFINISHED_MS) return `the ${RUN_LABEL[other]} run is still in progress`;
     }
     return null;
   };

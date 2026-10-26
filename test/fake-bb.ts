@@ -88,7 +88,7 @@ export function fakeBb({ threads: seed = {}, overrides = {}, settings: initial =
       schedule: (name: string, cron: string, fn: Fn) => { schedules[name] = { cron, fn }; },
       service: (name: string, s: { start: (signal: AbortSignal) => Promise<void> }) => { services[name] = s; },
     },
-    realtime: { publish: () => undefined },
+    realtime: { publish: record("realtime.publish", () => undefined) },
     rpc: { register: (_c: unknown, handlers: Record<string, Fn>) => Object.assign(rpc, handlers) },
     events: { on: (name: string, f: Fn) => void (events[name] ??= []).push(f) },
     onDispose: (f: Fn) => void disposers.push(f),

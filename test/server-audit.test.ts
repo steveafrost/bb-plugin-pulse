@@ -344,3 +344,36 @@ test("store imp4 the server's housekeeping wakes an expired snooze without a cap
   assert.equal(raw.status, "open");
   assert.equal(raw.history.at(-1).change, "snooze-expired");
 });
+
+// ---- Binks (bb-marketplace#131): an older run's log covered a newer dispatch ----
+test("binks a stamped log covers only its own dispatch, so a newer prompt can still be overdue or missed", async () => {
+  const f = fakeBb();
+  await plugin(f.bb as never);
+  const now = Date.now();
+  const t = (m: number) => new Date(now - m * MIN).toISOString();
+  // Run A (sent 180m ago) was still going when B was queued 120m ago; A logs after B's send time.
+  f.kv.set("dispatches:daily", [
+    { at: t(180), threadId: "thr_d", trigger: "schedule" },
+    { at: t(120), threadId: "thr_d", trigger: "schedule" },
+  ]);
+  store.logRun({ run: "daily", summary: "A", sources: ["slack"], started: t(180) }, f.home);
+  assert.equal((await f.automation("daily")).overdue, true, "A's log doesn't stand in for B");
+  const snap = await f.rpc.pulse_snapshot!(null);
+  assert.deepEqual(snap.missedRuns.filter((m: { run: string }) => m.run === "daily").map((m: { at: string }) => m.at), [t(120)]);
+  // B logs with its own stamp: covered.
+  store.logRun({ run: "daily", summary: "B", sources: ["slack"], started: t(120) }, f.home);
+  assert.equal((await f.automation("daily")).overdue, false);
+});
+
+test("binks recording a dispatch notifies the panel", async () => {
+  const f = fakeBb({ threads: { thr_run: { status: "active" } } });
+  await plugin(f.bb as never);
+  f.kv.set("thread:hourly", "thr_run");
+  await f.emit("thread.active", { thread: { id: "thr_run" } });
+  await f.rpc.pulse_run_now!({ run: "hourly" });
+  await new Promise((r) => setTimeout(r, 300));
+  const before = f.count("realtime.publish");
+  await f.rpc.pulse_run_now!({ run: "hourly" }); // updates the queued row only
+  await new Promise((r) => setTimeout(r, 300));
+  assert.ok(f.count("realtime.publish") > before, "a queued-row dispatch publishes a change");
+});
