@@ -95,6 +95,38 @@ export interface Automation {
   paused?: boolean;
   /** The schedule setting changed since load; only `bb plugin reload` applies it. */
   pendingReload?: boolean;
+  /** bb refused the loaded cron, so nothing runs (the reason bb gave). */
+  scheduleError?: string | null;
+  /** The changed, not yet loaded cron will be refused on reload (why). */
+  pendingError?: string | null;
+  /** The latest failure since this run's last logged run, if any. */
+  failure?: RunFailure | null;
+  /** A prompt was sent more than 45 minutes ago and no run has logged since. */
+  overdue?: boolean;
+  lastDispatchAt?: string | null;
+  /** The "Existing thread for … runs" setting: null when empty; dead = archived/gone; skipped = its send failed for good. */
+  pinState?: "ok" | "dead" | "skipped" | null;
+}
+
+/** A prompt Pulse sent to a run thread. */
+export interface RunDispatch {
+  at: string;
+  threadId: string;
+  trigger: "schedule" | "manual" | "catch-up";
+}
+
+export interface RunFailure {
+  at: string;
+  error: string;
+  threadId: string | null;
+  /** When the one automatic retry is due. */
+  retryAt?: string;
+}
+
+/** A dispatched run that never logged: its turn died, or a later prompt superseded it. */
+export interface MissedRun extends RunDispatch {
+  run: string;
+  label: string;
 }
 
 export interface PulseSnapshot {
@@ -108,9 +140,15 @@ export interface PulseSnapshot {
   runItems?: Record<string, { id: string; title: string; status: Status }>;
   recovered?: PulseRecovery | null;
   automations: Automation[];
+  /** Newest first, last 3 days. */
+  missedRuns?: MissedRun[];
   parentThreadId: string | null;
   /** No project is set in the plugin settings yet. */
   needsProject?: boolean;
+  /** Loaded without a project and one was set since: runs work, bb may still list "needs configuration". */
+  projectSetLive?: boolean;
+  /** The store directory setting changed; the panel keeps showing the loaded store until reload. */
+  homePending?: boolean;
 }
 
 export type ItemAction = "done" | "dismiss" | "snooze" | "reopen";

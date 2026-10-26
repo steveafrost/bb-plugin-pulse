@@ -19,6 +19,8 @@ export interface PromptContext {
   sources: string;
   /** Extra house rules, appended verbatim. */
   instructions: string;
+  /** When Pulse dispatched this run (ISO); the run passes it to `pulse log --started`. */
+  startedAt?: string;
 }
 
 export const DEFAULT_SOURCES =

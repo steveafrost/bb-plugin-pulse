@@ -1,0 +1,422 @@
+// Regression tests for the 0.1.13 server audit (audit/server.md), plus the server side of the
+// capture and UI audits. Each test names the finding it covers. The fake bb records schedules,
+// services, events, warnings and every SDK call, and keeps a per-thread queue so queue-if-active
+// sends to a busy thread behave like the host's.
+import { afterEach, test } from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { execFileSync } from "node:child_process";
+import plugin from "../server.ts";
+import * as store from "../lib/store.mjs";
+
+type Fn = (...args: any[]) => any;
+type Thread = { id: string; status: string; createdAt: number; archivedAt: number | null; deletedAt: number | null; visibility: string; queuedMessageCount?: number };
+
+const MIN = 60_000;
+
+function fakeBb({ threads: seed = {}, overrides = {}, settings: initial = {} }: { threads?: Record<string, Partial<Thread>>; overrides?: Record<string, Fn>; settings?: Record<string, unknown> } = {}) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "pulse-srv-"));
+  const kv = new Map<string, unknown>();
+  const rpc: Record<string, Fn> = {};
+  const events: Record<string, Fn[]> = {};
+  const calls: Record<string, unknown[][]> = {};
+  const onChange: Fn[] = [];
+  const schedules: Record<string, { cron: string; fn: Fn }> = {};
+  const services: Record<string, { start: (signal: AbortSignal) => Promise<void> }> = {};
+  const warns: string[] = [];
+  const infos: string[] = [];
+  const disposers: Fn[] = [];
+  const threadState = new Map<string, Thread>();
+  const queues = new Map<string, { id: string; updatedAt: number; payload: { kind: string }; content: { type: string; text: string }[] }[]>();
+  const thread = (id: string): Thread => {
+    if (!threadState.has(id)) threadState.set(id, { id, status: "idle", createdAt: Date.now(), archivedAt: null, deletedAt: null, visibility: "hidden" });
+    return threadState.get(id)!;
+  };
+  for (const [id, t] of Object.entries(seed)) Object.assign(thread(id), t);
+  let spawned = 0;
+  let values: Record<string, unknown> = {};
+  const record = (name: string, impl: Fn) => async (...args: unknown[]) => {
+    (calls[name] ??= []).push(args);
+    return impl(...args);
+  };
+  const impls: Record<string, Fn> = {
+    "threads.get": ({ threadId }: { threadId: string }) => ({ ...thread(threadId), queuedMessageCount: queues.get(threadId)?.length ?? 0 }),
+    "threads.spawn": () => { const id = spawned++ ? `thr_new${spawned}` : "thr_new"; thread(id); return { id }; },
+    "threads.send": ({ threadId, input }: { threadId: string; input: { text: string }[] }) => {
+      if (thread(threadId).status === "active") {
+        const q = queues.get(threadId) ?? [];
+        q.push({ id: `q${q.length + 1}`, updatedAt: Date.now(), payload: { kind: "inline" }, content: [{ type: "text", text: input[0]!.text }] });
+        queues.set(threadId, q);
+      }
+      return {};
+    },
+    "threads.update": () => ({}),
+    "threads.stop": () => ({}),
+    "threads.archive": ({ threadId }: { threadId: string }) => { thread(threadId).archivedAt = Date.now(); return {}; },
+    "threads.output": () => ({ output: null }),
+    "threads.retry": () => ({ kind: "queued" }),
+    "threads.list": () => [],
+    "threads.experimental_listPluginMetadata": () => ({ threads: [] }),
+    "queued.list": ({ threadId }: { threadId: string }) => queues.get(threadId) ?? [],
+    "queued.update": ({ threadId, queuedMessageId, input }: { threadId: string; queuedMessageId: string; input: { text: string }[] }) => {
+      const row = queues.get(threadId)?.find((r) => r.id === queuedMessageId);
+      if (row) { row.content = [{ type: "text", text: input[0]!.text }]; row.updatedAt = Date.now(); }
+      return {};
+    },
+    ...overrides,
+  };
+  const area = (prefix: string, names: string[]) => Object.fromEntries(names.map((n) => [n, record(`${prefix}.${n}`, (...a: unknown[]) => impls[`${prefix}.${n}`]!(...a))]));
+  const threadsArea = area("threads", ["get", "spawn", "send", "update", "stop", "archive", "output", "retry", "list", "experimental_listPluginMetadata"]);
+  const bb = {
+    pluginId: "pulse",
+    settings: {
+      define(desc: Record<string, { default?: unknown }>) {
+        const defaults = Object.fromEntries(Object.entries(desc).map(([k, d]) => [k, d.default ?? ""]));
+        values = { ...defaults, project: "proj_1", storeDir: home, ...initial };
+        return { get: async () => ({ ...values }), onChange: (f: Fn) => onChange.push(f) };
+      },
+    },
+    status: { needsConfiguration: () => undefined },
+    storage: { kv: { get: async (k: string) => kv.get(k), set: async (k: string, v: unknown) => void kv.set(k, v), delete: async (k: string) => void kv.delete(k) } },
+    sdk: {
+      threads: { ...threadsArea, queuedMessages: area("queued", ["list", "update"]) },
+      threadSections: { list: async () => [{ id: "sec_1", name: "Pulse" }], create: async () => ({ id: "sec_1" }) },
+      plugins: { callRpc: async () => ({}) },
+    },
+    log: { info: (m: string) => void infos.push(m), warn: (m: string) => void warns.push(m) },
+    background: {
+      schedule: (name: string, cron: string, fn: Fn) => { schedules[name] = { cron, fn }; },
+      service: (name: string, s: { start: (signal: AbortSignal) => Promise<void> }) => { services[name] = s; },
+    },
+    realtime: { publish: () => undefined },
+    rpc: { register: (_c: unknown, handlers: Record<string, Fn>) => Object.assign(rpc, handlers) },
+    events: { on: (name: string, f: Fn) => void (events[name] ??= []).push(f) },
+    onDispose: (f: Fn) => void disposers.push(f),
+  };
+  const loaded = {
+    bb, home, kv, rpc, calls, schedules, services, warns, infos, events, thread, queues,
+    count: (name: string) => calls[name]?.length ?? 0,
+    sends: () => (calls["threads.send"] ?? []).map(([a]) => (a as { threadId: string }).threadId),
+    emit: async (name: string, payload: unknown) => { for (const f of events[name] ?? []) await f(payload); },
+    changeSettings: (next: Record<string, unknown>) => { values = { ...values, ...next }; onChange.forEach((f) => f({ ...values })); },
+    tick: async (run: string) => schedules[`run-${run}`]!.fn(),
+    automation: async (run: string) => (await rpc.pulse_snapshot!(null)).automations.find((a: { run: string }) => a.run === run),
+    /** Run the reconcile service's first pass (catch-up + housekeeping), then stop it. */
+    startServices: async () => {
+      const ac = new AbortController();
+      const done = services["action-reconcile"]!.start(ac.signal);
+      await new Promise((r) => setTimeout(r, 20));
+      ac.abort();
+      await done;
+    },
+  };
+  live.push(async () => { for (const d of disposers) await d(); });
+  return loaded;
+}
+
+const live: (() => Promise<void>)[] = [];
+afterEach(async () => { while (live.length) await live.pop()!(); });
+const settle = () => new Promise((r) => setTimeout(r, 10));
+/** A daily cron whose tick is `offsetMin` minutes from now (negative = in the past). */
+const cronAt = (offsetMin: number) => { const d = new Date(Date.now() + offsetMin * MIN); return `${d.getMinutes()} ${d.getHours()} * * *`; };
+
+// ---- server.md #1 / improvement 1: a turn that died after the send counted as a success ----
+test("server#1 a run turn that fails is retried once, then recorded for the panel", async () => {
+  const f = fakeBb();
+  await plugin(f.bb as never);
+  f.kv.set("thread:hourly", "thr_run");
+  await f.rpc.pulse_run_now!({ run: "hourly" });
+  assert.ok(f.events["turn.failed"], "turn.failed is observed");
+  const before = Date.now();
+  await f.emit("turn.failed", { threadId: "thr_run", requestId: "creq_1", turnId: null, errorInfo: { category: "connection-failed", httpStatusCode: null, providerCode: null }, inputAccepted: false, rateLimits: null, attemptNumber: 1 });
+  const [retry] = f.calls["threads.retry"]![0] as [{ threadId: string; turnRequestId: string; sendAt: number }];
+  assert.equal(retry.threadId, "thr_run");
+  assert.equal(retry.turnRequestId, "creq_1");
+  assert.ok(retry.sendAt >= before + 4 * MIN && retry.sendAt <= Date.now() + 6 * MIN);
+  await f.emit("turn.failed", { threadId: "thr_run", requestId: "creq_2", turnId: null, errorInfo: { category: "connection-failed", httpStatusCode: null, providerCode: null }, inputAccepted: false, rateLimits: null, attemptNumber: 2 });
+  assert.equal(f.count("threads.retry"), 1, "only one automatic retry");
+  const hourly = await f.automation("hourly");
+  assert.match(hourly.failure.error, /connection-failed/);
+  assert.ok(f.warns.some((w) => /hourly run on thr_run failed/.test(w)));
+  // A later logged run clears it.
+  await settle();
+  store.logRun({ run: "hourly", summary: "ok", sources: ["slack"] }, f.home);
+  assert.equal((await f.automation("hourly")).failure, null);
+});
+
+test("server#1 a failure in a pinned (user) thread is recorded, never retried", async () => {
+  const f = fakeBb({ settings: { hourlyThread: "thr_mine" } });
+  await plugin(f.bb as never);
+  await f.emit("turn.failed", { threadId: "thr_mine", requestId: "creq_1", turnId: null, errorInfo: null, inputAccepted: true, rateLimits: null, attemptNumber: 1 });
+  assert.equal(f.count("threads.retry"), 0);
+  assert.ok((await f.automation("hourly")).failure);
+});
+
+test("server#1 a sent run with no log after 45 minutes is overdue, and a failing schedule is logged", async () => {
+  const f = fakeBb({ overrides: { "threads.send": () => { throw new Error("JSON-RPC request timed out: thread/resume"); } } });
+  await plugin(f.bb as never);
+  f.kv.set("thread:hourly", "thr_run");
+  // The hourly default may not be due now (weekday hours); call the registered callback directly.
+  await assert.rejects(f.tick("hourly"), /timed out/);
+  assert.ok(f.warns.some((w) => /scheduled hourly run failed: JSON-RPC request timed out/.test(w)));
+  assert.match((await f.automation("hourly")).failure.error, /thread\/resume/);
+  f.kv.set("dispatches:daily", [{ at: new Date(Date.now() - 50 * MIN).toISOString(), threadId: "thr_d", trigger: "schedule" }]);
+  assert.equal((await f.automation("daily")).overdue, true);
+  f.kv.set("dispatches:weekly", [{ at: new Date(Date.now() - 10 * MIN).toISOString(), threadId: "thr_w", trigger: "schedule" }]);
+  assert.equal((await f.automation("weekly")).overdue, false);
+});
+
+// ---- server.md #2 / improvement 4: scheduled prompts piled up behind a busy run thread ----
+test("server#2 runs sent to a busy thread collapse into one queued prompt with the current stamp", async () => {
+  const f = fakeBb({ threads: { thr_run: { status: "active" } } });
+  await plugin(f.bb as never);
+  f.kv.set("thread:hourly", "thr_run");
+  await f.emit("thread.active", { thread: { id: "thr_run" } });
+  for (let i = 0; i < 3; i++) await f.rpc.pulse_run_now!({ run: "hourly" });
+  assert.equal(f.count("threads.send"), 1, "one send; the next two update the queued row");
+  assert.equal(f.count("queued.update"), 2);
+  assert.equal(f.queues.get("thr_run")!.length, 1);
+  // Superseded dispatches don't count as runs that didn't finish.
+  assert.equal((f.kv.get("dispatches:hourly") as unknown[]).length, 1);
+});
+
+test("server#2 a scheduled run skips a thread that has been busy for over an hour", async () => {
+  const f = fakeBb({ threads: { thr_run: { status: "active" } } });
+  await plugin(f.bb as never);
+  f.kv.set("thread:hourly", "thr_run");
+  f.kv.set("dispatches:hourly", [{ at: new Date(Date.now() - 70 * MIN).toISOString(), threadId: "thr_run", trigger: "schedule" }]);
+  // Daily and Weekly far from now, so the Hourly doesn't yield to them.
+  f.changeSettings({});
+  await f.tick("hourly");
+  assert.equal(f.count("threads.send"), 0);
+  assert.match((await f.automation("hourly")).failure.error, /busy for 7\d min/);
+});
+
+// ---- server.md #3 / improvement 6: a cron bb rejected showed as enabled with a next run ----
+test("server#3 a schedule bb refuses shows as not running, with bb's reason", async () => {
+  const f = fakeBb({ settings: { hourlyCron: "0 9-30 * * *" } });
+  f.bb.background.schedule = (name: string, cron: string, fn: Fn) => {
+    if (/9-30/.test(cron)) throw new Error(`invalid cron "${cron}" for schedule "${name}": Constraint error, got range 9-30 expected range 0-23`);
+    f.schedules[name] = { cron, fn };
+  };
+  await plugin(f.bb as never);
+  const hourly = await f.automation("hourly");
+  assert.equal(hourly.enabled, false);
+  assert.equal(hourly.nextRunAt, null);
+  assert.match(hourly.scheduleError, /Constraint error/);
+});
+
+test("server improvement 6: a changed cron that bb will refuse is flagged before the reload", async () => {
+  const f = fakeBb();
+  await plugin(f.bb as never);
+  f.changeSettings({ dailyCron: "0 16-30 * * *", storeDir: "/tmp/elsewhere" });
+  const snap = await f.rpc.pulse_snapshot!(null);
+  const daily = snap.automations.find((a: { run: string }) => a.run === "daily");
+  assert.equal(daily.pendingReload, true);
+  assert.match(daily.pendingError, /hour 30 is out of range/);
+  assert.equal(snap.homePending, true);
+  assert.ok(f.warns.some((w) => /daily schedule .* is not valid/.test(w)));
+});
+
+test("server improvement 6: a project set after load is reported, since bb keeps the needs-configuration flag", async () => {
+  const f = fakeBb({ settings: { project: "" } });
+  await plugin(f.bb as never);
+  assert.equal((await f.rpc.pulse_snapshot!(null)).needsProject, true);
+  f.changeSettings({ project: "proj_2" });
+  const snap = await f.rpc.pulse_snapshot!(null);
+  assert.equal(snap.needsProject, false);
+  assert.equal(snap.projectSetLive, true);
+});
+
+// ---- server.md #4 / improvement 3: a run due while Pulse was not loaded was skipped ----
+test("server#4 a tick missed across a reload is caught up on load", async () => {
+  const f = fakeBb({ settings: { dailyCron: cronAt(-10), hourlyCron: "", weeklyCron: "" } });
+  await plugin(f.bb as never);
+  f.kv.set("thread:daily", "thr_daily");
+  f.kv.set("dispatches:daily", [{ at: new Date(Date.now() - 24 * 60 * MIN + 5 * MIN).toISOString(), threadId: "thr_daily", trigger: "schedule" }]);
+  await f.startServices();
+  assert.deepEqual(f.sends(), ["thr_daily"]);
+  assert.match((f.calls["threads.send"]![0]![0] as { input: { text: string }[] }).input[0]!.text, /^\[Pulse catch-up daily run · /);
+});
+
+test("server#4 no catch-up when the tick already ran, or on a fresh install", async () => {
+  const ran = fakeBb({ settings: { dailyCron: cronAt(-10), hourlyCron: "", weeklyCron: "" } });
+  await plugin(ran.bb as never);
+  ran.kv.set("thread:daily", "thr_daily");
+  ran.kv.set("dispatches:daily", [{ at: new Date(Date.now() - 9 * MIN).toISOString(), threadId: "thr_daily", trigger: "schedule" }]);
+  await ran.startServices();
+  assert.equal(ran.count("threads.send"), 0);
+  const fresh = fakeBb({ settings: { dailyCron: cronAt(-10), hourlyCron: "", weeklyCron: "" } });
+  await plugin(fresh.bb as never);
+  await fresh.startServices();
+  assert.equal(fresh.count("threads.send") + fresh.count("threads.spawn"), 0);
+});
+
+// ---- server.md #5: a failing pin threw away the healthy cached thread ----
+test("server#5 a failing pinned thread falls back to the cached run thread", async () => {
+  const f = fakeBb({
+    overrides: { "threads.send": ({ threadId }: { threadId: string }) => { if (threadId === "thr_pinned") throw new Error("409: environment is unavailable"); return {}; } },
+  });
+  await plugin(f.bb as never);
+  f.kv.set("thread:hourly", "thr_cached");
+  store.setRunThread("hourly", "thr_cached", f.home);
+  f.changeSettings({ hourlyThread: "thr_pinned" });
+  const res = await f.rpc.pulse_run_now!({ run: "hourly" });
+  assert.equal(res.threadId, "thr_cached");
+  assert.equal(f.count("threads.spawn"), 0);
+  assert.equal(f.kv.get("thread:hourly"), "thr_cached");
+});
+
+// ---- server.md #6: pinning a visible thread hid it ----
+test("server#6 a pinned thread keeps its visibility; Pulse's own threads are hidden", async () => {
+  const f = fakeBb({ threads: { thr_mine: { visibility: "visible" }, thr_own: { visibility: "visible" } } });
+  await plugin(f.bb as never);
+  f.changeSettings({ dailyThread: "thr_mine" });
+  await f.rpc.pulse_run_now!({ run: "daily" });
+  f.kv.set("thread:weekly", "thr_own");
+  await f.rpc.pulse_run_now!({ run: "weekly" });
+  await settle();
+  assert.deepEqual(f.calls["threads.update"]?.map(([a]) => (a as { threadId: string }).threadId), ["thr_own"]);
+});
+
+// ---- server.md improvement 2: rotate run threads ----
+test("server improvement 2: a day-old idle run thread is replaced and archived; a busy or pinned one is kept", async () => {
+  const old = Date.now() - 25 * 60 * MIN;
+  const f = fakeBb({ threads: { thr_old: { createdAt: old }, thr_busy: { createdAt: old, status: "active" }, thr_pin: { createdAt: old } } });
+  await plugin(f.bb as never);
+  f.kv.set("thread:hourly", "thr_old");
+  const res = await f.rpc.pulse_run_now!({ run: "hourly" });
+  assert.equal(res.threadId, "thr_new");
+  assert.deepEqual(f.calls["threads.archive"]?.map(([a]) => (a as { threadId: string }).threadId), ["thr_old"]);
+  assert.equal(store.getRunThreads(f.home).hourly, "thr_new");
+  f.kv.set("thread:daily", "thr_busy");
+  assert.equal((await f.rpc.pulse_run_now!({ run: "daily" })).threadId, "thr_busy");
+  f.changeSettings({ weeklyThread: "thr_pin" });
+  assert.equal((await f.rpc.pulse_run_now!({ run: "weekly" })).threadId, "thr_pin");
+  assert.equal(f.count("threads.archive"), 1);
+});
+
+// ---- server.md improvement 5: say when a pinned-thread setting is dead ----
+test("server improvement 5: an archived pin shows as dead, a pin whose send failed as skipped", async () => {
+  const f = fakeBb({
+    threads: { thr_arch: { archivedAt: 1 } },
+    overrides: { "threads.send": ({ threadId }: { threadId: string }) => { if (threadId === "thr_bad") throw new Error("409: environment is unavailable"); return {}; } },
+  });
+  await plugin(f.bb as never);
+  f.changeSettings({ dailyThread: "thr_arch", weeklyThread: "thr_bad" });
+  await f.rpc.pulse_run_now!({ run: "weekly" });
+  assert.equal((await f.automation("daily")).pinState, "dead");
+  assert.equal((await f.automation("weekly")).pinState, "skipped");
+  assert.equal((await f.automation("hourly")).pinState, null);
+});
+
+// ---- server.md improvement 7: cheaper event paths ----
+test("server improvement 7: thread events for unrelated threads don't re-read items.json", async () => {
+  const f = fakeBb();
+  await plugin(f.bb as never);
+  store.upsert([{ id: "slack:1", title: "Answer Sam" }], "hourly", f.home);
+  const items = path.join(f.home, "items.json");
+  const real = fs.readFileSync;
+  let reads = 0;
+  (fs as { readFileSync: Fn }).readFileSync = (file: unknown, ...rest: unknown[]) => { if (file === items) reads++; return (real as Fn)(file, ...rest); };
+  try {
+    for (let i = 0; i < 50; i++) await f.emit("thread.idle", { thread: { id: `thr_other${i}` }, lastAssistantText: "x" });
+  } finally { (fs as { readFileSync: Fn }).readFileSync = real; }
+  assert.ok(reads <= 1, `${reads} reads`);
+});
+
+// ---- server.md improvement 8: recover run threads from plugin metadata ----
+test("server improvement 8: with kv and state.json gone, the run thread is found by its pulseRun metadata", async () => {
+  const f = fakeBb({
+    overrides: {
+      "threads.list": () => [{ id: "thr_meta", createdAt: 5, archivedAt: null, deletedAt: null }, { id: "thr_act", createdAt: 9, archivedAt: null, deletedAt: null }],
+      "threads.experimental_listPluginMetadata": () => ({ threads: [{ threadId: "thr_meta", metadata: { pulseRun: "hourly" } }, { threadId: "thr_act", metadata: { pulseItemId: "slack:1" } }] }),
+    },
+  });
+  await plugin(f.bb as never);
+  const res = await f.rpc.pulse_run_now!({ run: "hourly" });
+  assert.equal(res.threadId, "thr_meta");
+  assert.equal(f.count("threads.spawn"), 0);
+  assert.equal(store.getRunThreads(f.home).hourly, "thr_meta");
+});
+
+// ---- capture.md B3: Hourly and Daily started together every afternoon ----
+test("capture B3 an Hourly slot within 45 minutes of a Daily run is skipped", async () => {
+  const f = fakeBb({ settings: { dailyCron: cronAt(20), weeklyCron: "" } });
+  await plugin(f.bb as never);
+  f.kv.set("thread:hourly", "thr_h");
+  await f.tick("hourly");
+  assert.equal(f.count("threads.send"), 0);
+  assert.ok(f.infos.some((m) => /hourly run skipped: the Daily run is scheduled within 45 minutes/.test(m)));
+  // A Daily that already fired at this slot counts too (bb runs due schedules one after another).
+  f.changeSettings({});
+  const g = fakeBb({ settings: { dailyCron: cronAt(-1), weeklyCron: "" } });
+  await plugin(g.bb as never);
+  g.kv.set("thread:hourly", "thr_h");
+  await g.tick("hourly");
+  assert.equal(g.count("threads.send"), 0);
+});
+
+test("capture B3 the Hourly still runs when the Daily is far off or paused", async () => {
+  const f = fakeBb({ settings: { dailyCron: cronAt(180), weeklyCron: "" } });
+  await plugin(f.bb as never);
+  f.kv.set("thread:hourly", "thr_h");
+  await f.tick("hourly");
+  assert.equal(f.count("threads.send"), 1);
+  const g = fakeBb({ settings: { dailyCron: cronAt(10), weeklyCron: "" } });
+  await plugin(g.bb as never);
+  g.kv.set("thread:hourly", "thr_h");
+  g.kv.set("paused:daily", true);
+  await g.tick("hourly");
+  assert.equal(g.count("threads.send"), 1);
+});
+
+// ---- capture.md B4 / I9: runs that never finished didn't show anywhere ----
+test("capture B4 a dispatched run that never logged is listed as didn't finish", async () => {
+  const f = fakeBb();
+  await plugin(f.bb as never);
+  const now = Date.now();
+  const t = (m: number) => new Date(now - m * MIN).toISOString();
+  store.logRun({ run: "hourly", summary: "logged", sources: ["slack"], started: t(118) }, f.home);
+  f.kv.set("dispatches:hourly", [
+    { at: t(240), threadId: "thr_h", trigger: "schedule" },
+    { at: t(118), threadId: "thr_h", trigger: "schedule" },
+    { at: t(5), threadId: "thr_h", trigger: "schedule" },
+  ]);
+  const snap = await f.rpc.pulse_snapshot!(null);
+  assert.deepEqual(snap.missedRuns.map((m: { at: string }) => m.at), [t(240)]);
+});
+
+// ---- capture.md B2: the installed skill pointed at a CLI path that doesn't exist ----
+test("capture B2 the server writes <store>/bin/pulse, a launcher pinned to its store", async () => {
+  const f = fakeBb();
+  await plugin(f.bb as never);
+  const launcher = path.join(f.home, "bin", "pulse");
+  assert.ok(fs.statSync(launcher).mode & 0o100, "executable");
+  execFileSync(launcher, ["upsert", "--run", "manual"], { input: JSON.stringify([{ id: "slack:L/1", title: "via launcher" }]), env: { ...process.env, PULSE_HOME: "/nonexistent" } });
+  assert.equal(store.getItem("slack:L/1", f.home).title, "via launcher");
+});
+
+// ---- ui.md improvement 1 (Undo): reopen restores the status the item had ----
+test("ui improvement 1: Undo reopens an item to waiting when it was waiting", async () => {
+  const f = fakeBb();
+  await plugin(f.bb as never);
+  store.upsert([{ id: "slack:U/1", title: "t", status: "waiting" }], "hourly", f.home);
+  await f.rpc.pulse_action!({ id: "slack:U/1", action: "done" });
+  const snap = await f.rpc.pulse_action!({ id: "slack:U/1", action: "reopen", restore: "waiting" });
+  assert.equal(snap.items.find((i: { id: string }) => i.id === "slack:U/1").status, "waiting");
+});
+
+// ---- store.md improvement 4 via the server: the reconcile pass wakes expired snoozes ----
+test("store imp4 the server's housekeeping wakes an expired snooze without a capture run", async () => {
+  const f = fakeBb();
+  await plugin(f.bb as never);
+  store.upsert([{ id: "slack:Z/1", title: "t" }], "hourly", f.home);
+  store.userAction("slack:Z/1", "snoozed", { until: new Date(Date.now() - 1000).toISOString() }, f.home);
+  await f.startServices();
+  const raw = JSON.parse(fs.readFileSync(path.join(f.home, "items.json"), "utf8")).items["slack:Z/1"];
+  assert.equal(raw.status, "open");
+  assert.equal(raw.history.at(-1).change, "snooze-expired");
+});

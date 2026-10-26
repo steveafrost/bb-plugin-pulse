@@ -36,12 +36,23 @@ export function parseSkillRules(text: string, warn: (msg: string) => void = () =
   return rules;
 }
 
+/**
+ * Snapshots run skillsFor for every open item and refetch on every store write, so a run that
+ * writes ten items would stat each skill in four roots dozens of times. Installed skills change
+ * rarely; a minute-old answer is fine.
+ */
+const LOCATE_TTL_MS = 60_000;
+const located = new Map<string, { at: number; path: string | null }>();
 function locate(name: string): string | null {
+  const hit = located.get(name);
+  if (hit && Date.now() - hit.at < LOCATE_TTL_MS) return hit.path;
+  let found: string | null = null;
   for (const root of ROOTS) {
     const p = path.join(root, name, "SKILL.md");
-    if (fs.existsSync(p)) return p;
+    if (fs.existsSync(p)) { found = p; break; }
   }
-  return null;
+  located.set(name, { at: Date.now(), path: found });
+  return found;
 }
 
 export function skillsFor(item: PulseItem, rules: SkillRule[]): SkillRef[] {
