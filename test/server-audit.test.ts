@@ -390,3 +390,15 @@ test("binks two runs can't pin the same thread: the earlier run keeps it, the la
   assert.notEqual(weekly.threadId, "thr_mine", "weekly never sends to (or replaces a queued run in) the daily pin");
   assert.equal(f.count("threads.spawn"), 1);
 });
+
+test("binks a hung thread is reported stuck even when a Pulse prompt is already queued behind it", async () => {
+  const f = fakeBb({ threads: { thr_run: { status: "active" } } });
+  await plugin(f.bb as never);
+  f.kv.set("thread:hourly", "thr_run");
+  f.kv.set("dispatches:hourly", [{ at: new Date(Date.now() - 70 * MIN).toISOString(), threadId: "thr_run", trigger: "manual" }]);
+  f.queues.set("thr_run", [{ id: "q1", updatedAt: 1, payload: { kind: "user" }, content: [{ type: "text", text: "[Pulse manual hourly run · old]" }] }]);
+  f.changeSettings({});
+  await f.tick("hourly");
+  assert.equal(f.count("queued.update"), 0, "the queued prompt is left alone");
+  assert.match((await f.automation("hourly")).failure.error, /busy for 7\d min/);
+});

@@ -553,6 +553,18 @@ export default async function plugin(bb: BbPluginApi) {
         break;
       }
       if (busy) {
+        // Before touching the queue: refreshing a queued prompt would otherwise keep a hung
+        // thread looking fresh, and the panel would never say it is stuck.
+        if (trigger === "schedule" && thread?.status === "active") {
+          const since = activeSince.get(id) ?? stamp((await dispatches(name)).at(-1)?.at);
+          if (Number.isFinite(since) && Date.now() - since > STUCK_MS) {
+            const minutes = Math.round((Date.now() - since) / MINUTE);
+            const error = `skipped: the ${RUN_LABEL[name]} thread has been busy for ${minutes} min`;
+            bb.log.warn(`${name} run ${error} (${id})`);
+            await recordFailure(name, { at, error, threadId: id });
+            return id;
+          }
+        }
         const rows = await queuedRows(id);
         const row = rows.find(isRunRow);
         // A pending automatic retry re-sends an older prompt; this one supersedes it. (Only on
@@ -573,16 +585,6 @@ export default async function plugin(bb: BbPluginApi) {
             return id;
           } catch (error) {
             bb.log.warn(`could not update the queued ${name} run on ${id}: ${message(error)}; queueing a new one`);
-          }
-        }
-        if (trigger === "schedule" && thread?.status === "active") {
-          const since = activeSince.get(id) ?? stamp((await dispatches(name)).at(-1)?.at);
-          if (Number.isFinite(since) && Date.now() - since > STUCK_MS) {
-            const minutes = Math.round((Date.now() - since) / MINUTE);
-            const error = `skipped: the ${RUN_LABEL[name]} thread has been busy for ${minutes} min`;
-            bb.log.warn(`${name} run ${error} (${id})`);
-            await recordFailure(name, { at, error, threadId: id });
-            return id;
           }
         }
       }
