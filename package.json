@@ -6,7 +6,7 @@
   "description": "A live board of what needs you, mirrored from Third Hand on the iPhone: the app captures, this plugin renders the snapshot and queues your actions back to it.",
   "repository": {
     "type": "git",
-    "url": "https://github.com/steveafrost/bb-plugin-thirdhand.git"
+    "url": "https://github.com/steveafrost/bb-plugin-pulse.git"
   },
   "license": "MIT",
   "bin": {
