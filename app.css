@@ -254,16 +254,6 @@ header:has(.pulse-hdr) { container: pulse-bar / inline-size; }
   display: none;
 }
 
-/* Keep bb's title bar in line with the board's centred column (.pulse__inner:
-   880px max minus 24px side padding = 832px of content), scoped to Pulse's title bar. */
-header:has(.pulse-hdr) {
-  padding-inline: max(24px, calc((100% - 832px) / 2));
-}
-
-
-/* bb leaves an empty trailing slot when the split-pane toggle isn't shown; it still takes a flex gap,
-   which pushed Run now ~8px inside the board column's right edge. */
-:has(> * > .pulse-hdr) > :empty { display: none; }
 
 /* Kebab "More actions" menu (narrow until a secondary view like Closed opens in place). */
 .pulse-pop:has(> .pulse-more-menu) { width: 220px; }
