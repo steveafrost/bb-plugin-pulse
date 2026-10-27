@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import * as store from "../lib/store.mjs";
 
-const home = () => fs.mkdtempSync(path.join(os.tmpdir(), "thirdhand-val-"));
+const home = () => fs.mkdtempSync(path.join(os.tmpdir(), "pulse-val-"));
 
 test("rejects non-string descriptive fields so one bad item can't break the panel", () => {
   const h = home();

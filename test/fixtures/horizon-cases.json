@@ -1,6 +1,6 @@
 {
   "at": "2026-10-23T12:00:00.000Z",
-  "note": "Shared with ThirdHandCore/Tests/ThirdHandCoreTests/HorizonTests.swift. Same inputs, same expected buckets on both sides.",
+  "note": "Shared with PulseCore/Tests/PulseCoreTests/HorizonTests.swift. Same inputs, same expected buckets on both sides.",
   "cases": [
     { "id": "high-no-due", "kind": "deadline", "priority": "high", "due": null, "status": "open", "expect": "now" },
     { "id": "high-far-due", "kind": "deadline", "priority": "high", "due": "2027-01-01T00:00:00.000Z", "status": "open", "expect": "now" },

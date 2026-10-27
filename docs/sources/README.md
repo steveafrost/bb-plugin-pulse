@@ -1,7 +1,7 @@
 # Source recipes
 
-Third Hand has **no connectors**. Each capture run hands the agent whatever text you put in
-**Settings › Plugins › Third Hand › How agents reach Slack, Gmail and Calendar**, and the agent uses the
+Pulse has **no connectors**. Each capture run hands the agent whatever text you put in
+**Settings › Plugins › Pulse › How agents reach Slack, Gmail and Calendar**, and the agent uses the
 CLIs, MCP servers and plugins already installed on your machine.
 
 That text is the whole integration. These recipes are tested, copy-pasteable versions of it for
@@ -19,13 +19,13 @@ Contributions welcome — see [Contributing a recipe](#contributing-a-recipe).
 
 These apply no matter which tools you name.
 
-1. **Say "read only" explicitly, and list the verbs.** Third Hand is a triage board; nothing should ever
+1. **Say "read only" explicitly, and list the verbs.** Pulse is a triage board; nothing should ever
    be sent, posted, reacted to, flagged, moved or deleted. Name the forbidden verbs rather than
    trusting a generic "read only".
 2. **Tell the agent what to do when a source is down.** The standard tail is:
    `If a source is unavailable, skip it and report it with --errors.` Without it, a run tends to
    invent plausible items instead of reporting the failure.
-3. **Describe the window to read**, in the tool's own terms. Third Hand already tells the agent to use
+3. **Describe the window to read**, in the tool's own terms. Pulse already tells the agent to use
    "since the last run of this name, with a small overlap", but tool-specific hints help — especially
    when the obvious query doesn't work (see iCloud's auto-archive trap below).
 4. **Use the source ID prefixes the panel expects.** Item IDs must look like `<source>:<stable-id>`

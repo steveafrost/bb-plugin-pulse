@@ -1,7 +1,7 @@
 /**
  * Next fire time for a 5-field cron expression in server-local time, for the
  * panel's "next run" hint. Supports `*`, numbers, lists, ranges and `*\/n` steps,
- * which covers the Third Hand schedules. Returns null when nothing matches in 8 days.
+ * which covers the Pulse schedules. Returns null when nothing matches in 8 days.
  */
 function field(spec: string, min: number, max: number): Set<number> {
   const out = new Set<number>();

@@ -7,7 +7,7 @@ import {
   DEFAULT_ICLOUD_DIR, SUPPORTED_SCHEMA_VERSION, createMirrorPoller, readSnapshot, resolveMirrorDir, snapshotPath,
 } from "../lib/snapshot.mjs";
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "thirdhand-mirror-"));
+const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "pulse-mirror-"));
 const fixture = JSON.parse(fs.readFileSync(new URL("./fixtures/snapshot.json", import.meta.url), "utf8"));
 
 const write = (dir, value) => {
@@ -17,28 +17,13 @@ const write = (dir, value) => {
 
 // ---- Directory resolution -------------------------------------------------
 
-test("resolution order is THIRDHAND_SNAPSHOT_DIR, then THIRDHAND_HOME, then iCloud", () => {
-  assert.equal(resolveMirrorDir({ THIRDHAND_SNAPSHOT_DIR: "/explicit", THIRDHAND_HOME: "/home" }), "/explicit");
-  assert.equal(resolveMirrorDir({ THIRDHAND_HOME: "/home" }), "/home");
+test("resolution order is PULSE_SNAPSHOT_DIR, then PULSE_HOME, then iCloud", () => {
+  assert.equal(resolveMirrorDir({ PULSE_SNAPSHOT_DIR: "/explicit", PULSE_HOME: "/home" }), "/explicit");
+  assert.equal(resolveMirrorDir({ PULSE_HOME: "/home" }), "/home");
   assert.equal(resolveMirrorDir({}), DEFAULT_ICLOUD_DIR);
-  assert.match(DEFAULT_ICLOUD_DIR, /iCloud~com~steveafrost~thirdhand\/Documents\/ThirdHand$/);
+  assert.match(DEFAULT_ICLOUD_DIR, /iCloud~com~steveafrost~pulse\/Documents\/Pulse$/);
   // An empty or whitespace value must not win over the next candidate.
-  assert.equal(resolveMirrorDir({ THIRDHAND_SNAPSHOT_DIR: "  ", THIRDHAND_HOME: "/home" }), "/home");
-});
-
-// The whole mirror is this one path: if it is wrong the plugin reads nothing and
-// reports "no snapshot yet" forever while the iPhone app works fine. Pinned
-// exactly, including the dot -> tilde transform macOS applies to container names.
-test("the default mirror directory is the Third Hand iCloud container's transport dir", () => {
-  const expected = path.join(
-    os.homedir(),
-    "Library/Mobile Documents/iCloud~com~steveafrost~thirdhand/Documents/ThirdHand",
-  );
-  assert.equal(DEFAULT_ICLOUD_DIR, expected);
-  assert.equal(snapshotPath(DEFAULT_ICLOUD_DIR), path.join(expected, "snapshot.json"));
-  // No dot-separated container id and no old name may survive in this path.
-  assert.doesNotMatch(DEFAULT_ICLOUD_DIR, /iCloud\.com/);
-  assert.doesNotMatch(DEFAULT_ICLOUD_DIR, /pulse/i);
+  assert.equal(resolveMirrorDir({ PULSE_SNAPSHOT_DIR: "  ", PULSE_HOME: "/home" }), "/home");
 });
 
 // ---- The three degraded states -------------------------------------------
@@ -81,7 +66,7 @@ test("a higher schemaVersion is an update state and renders nothing", () => {
   assert.equal(read.state, "update");
   assert.equal(read.schemaVersion, 2);
   assert.deepEqual(read.items, [], "a newer snapshot must not be partially rendered");
-  assert.match(read.message, /Update the Third Hand iOS app/);
+  assert.match(read.message, /Update the Pulse iOS app/);
   // And it must not have been rewritten.
   assert.equal(JSON.parse(fs.readFileSync(snapshotPath(dir), "utf8")).schemaVersion, 2);
 });

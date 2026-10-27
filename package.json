@@ -1,16 +1,16 @@
 {
-  "name": "bb-plugin-thirdhand",
-  "version": "0.3.0",
+  "name": "bb-plugin-pulse",
+  "version": "0.2.0",
   "type": "module",
   "private": true,
-  "description": "A live board of what needs you, mirrored from Third Hand on the iPhone: the app captures, this plugin renders the snapshot and queues your actions back to it.",
+  "description": "A live board of what needs you, mirrored from Pulse on the iPhone: the app captures, this plugin renders the snapshot and queues your actions back to it.",
   "repository": {
     "type": "git",
     "url": "https://github.com/steveafrost/bb-plugin-pulse.git"
   },
   "license": "MIT",
   "bin": {
-    "thirdhand": "./bin/thirdhand.mjs"
+    "pulse": "./bin/pulse.mjs"
   },
   "scripts": {
     "build": "bb plugin build",
@@ -22,8 +22,8 @@
     "bbPluginSdk": ">=0.6.37"
   },
   "bb": {
-    "name": "Third Hand",
-    "description": "A live board of what needs you, mirrored from Third Hand on the iPhone: the app captures, this plugin renders the snapshot and queues your actions back to it.",
+    "name": "Pulse",
+    "description": "A live board of what needs you, mirrored from Pulse on the iPhone: the app captures, this plugin renders the snapshot and queues your actions back to it.",
     "branding": {
       "icon": "./assets/icon.svg"
     },

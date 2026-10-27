@@ -14,8 +14,8 @@ import * as store from "../lib/store.mjs";
 type Fn = (...args: any[]) => any;
 
 function fakeBb(overrides: Record<string, unknown> = {}) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "thirdhand-server-"));
-  const mirror = fs.mkdtempSync(path.join(os.tmpdir(), "thirdhand-mirror-"));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "pulse-server-"));
+  const mirror = fs.mkdtempSync(path.join(os.tmpdir(), "pulse-mirror-"));
   const kv = new Map<string, unknown>();
   const rpc: Record<string, Fn> = {};
   const events: Record<string, Fn[]> = {};
@@ -49,7 +49,7 @@ function fakeBb(overrides: Record<string, unknown> = {}) {
     storage: { kv: { get: async (k: string) => kv.get(k), set: async (k: string, v: unknown) => void kv.set(k, v), delete: async (k: string) => void kv.delete(k) } },
     sdk: {
       threads: Object.fromEntries(Object.entries(threads).map(([k, f]) => [k, record(`threads.${k}`, f)])),
-      threadSections: { list: async () => [{ id: "sec_1", name: "Third Hand" }], create: async () => ({ id: "sec_1" }) },
+      threadSections: { list: async () => [{ id: "sec_1", name: "Pulse" }], create: async () => ({ id: "sec_1" }) },
       plugins: { callRpc: async () => ({}) },
     },
     log: { info: () => undefined, warn: () => undefined },
@@ -89,7 +89,7 @@ test("a run whose cached thread was archived spawns and remembers a new one", as
   const f = fakeBb({ get: () => ({ id: "thr_old", archivedAt: 1, deletedAt: null }) });
   await plugin(f.bb as never);
   f.kv.set("thread:hourly", "thr_old");
-  const res = await f.rpc.thirdhand_run_now!({ run: "hourly" });
+  const res = await f.rpc.pulse_run_now!({ run: "hourly" });
   assert.equal(res.threadId, "thr_new");
   assert.equal(f.count("threads.send"), 0);
   assert.equal(f.kv.get("thread:hourly"), "thr_new");
@@ -100,7 +100,7 @@ test("a run thread that dies between probe and send is replaced, not wedged", as
   const f = fakeBb({ send: () => { throw new Error("409: thread is archived"); } });
   await plugin(f.bb as never);
   f.kv.set("thread:daily", "thr_old");
-  const res = await f.rpc.thirdhand_run_now!({ run: "daily" });
+  const res = await f.rpc.pulse_run_now!({ run: "daily" });
   assert.equal(res.threadId, "thr_new");
   assert.equal(f.count("threads.spawn"), 1);
 });
@@ -113,7 +113,7 @@ test("an action thread that can't be recorded is stopped and archived, and the c
   });
   await plugin(f.bb as never);
   f.publishSnapshot([item]);
-  await assert.rejects(f.rpc.thirdhand_start_action!({ id: item.id }), /Couldn't record the agent thread/);
+  await assert.rejects(f.rpc.pulse_start_action!({ id: item.id }), /Couldn't record the agent thread/);
   assert.deepEqual(f.calls["threads.stop"]?.[0]?.[0], { threadId: "thr_orphan" });
   assert.deepEqual(f.calls["threads.archive"]?.[0]?.[0], { threadId: "thr_orphan" });
 });
@@ -122,11 +122,11 @@ test("a finished action thread settles to ready with its Ready line", async () =
   const f = fakeBb({ spawn: () => ({ id: "thr_act" }) });
   await plugin(f.bb as never);
   f.publishSnapshot([item]);
-  await f.rpc.thirdhand_start_action!({ id: item.id });
+  await f.rpc.pulse_start_action!({ id: item.id });
   f.emit("thread.idle", { thread: { id: "thr_act" }, lastAssistantText: "Drafted it.\n\n**Ready:** reply to Sam drafted" });
   // The action record is Mac-local state (the app never sees it), so it lands in
   // the plugin's own state directory rather than the snapshot.
-  const snap = await f.rpc.thirdhand_snapshot!(null);
+  const snap = await f.rpc.pulse_snapshot!(null);
   const action = snap.items.find((i: { id: string }) => i.id === item.id).action;
   assert.equal(action.status, "ready");
   assert.equal(action.summary, "reply to Sam drafted");
@@ -139,7 +139,7 @@ test("a changed schedule shows as pending reload, not paused, until reload", asy
   await plugin(f.bb as never);
   f.changeSettings({ captureRuns: "mac" });
   f.changeSettings({ hourlyCron: "0 * * * *" });
-  const snap = await f.rpc.thirdhand_snapshot!(null);
+  const snap = await f.rpc.pulse_snapshot!(null);
   const hourly = snap.automations.find((a: { run: string }) => a.run === "hourly");
   assert.equal(hourly.pendingReload, true);
   assert.equal(hourly.paused, false);
@@ -151,13 +151,13 @@ test("back-to-back snapshots reuse thread probes; a run still probes fresh", asy
   const f = fakeBb();
   await plugin(f.bb as never);
   for (const run of ["hourly", "daily", "weekly"]) f.kv.set(`thread:${run}`, `thr_${run}`);
-  await f.rpc.thirdhand_snapshot!(null);
+  await f.rpc.pulse_snapshot!(null);
   const first = f.count("threads.get");
   assert.equal(first, 3);
-  await f.rpc.thirdhand_snapshot!(null);
-  await f.rpc.thirdhand_snapshot!(null);
+  await f.rpc.pulse_snapshot!(null);
+  await f.rpc.pulse_snapshot!(null);
   assert.equal(f.count("threads.get"), first);
-  await f.rpc.thirdhand_run_now!({ run: "hourly" });
+  await f.rpc.pulse_run_now!({ run: "hourly" });
   assert.ok(f.count("threads.get") > first);
 });
 
@@ -165,7 +165,7 @@ test("a panel action queues a command for the iPhone and marks the item pending"
   const f = fakeBb();
   await plugin(f.bb as never);
   f.publishSnapshot([item]);
-  const snap = await f.rpc.thirdhand_action!({ id: item.id, action: "done" });
+  const snap = await f.rpc.pulse_action!({ id: item.id, action: "done" });
   const row = snap.items.find((i: { id: string }) => i.id === item.id);
   // The iPhone owns content: the status is unchanged, only the marker is added.
   assert.equal(row.status, "open");
@@ -181,13 +181,13 @@ test("an acknowledged command stops showing as pending", async () => {
   const f = fakeBb();
   await plugin(f.bb as never);
   f.publishSnapshot([item]);
-  const first = await f.rpc.thirdhand_action!({ id: item.id, action: "dismiss" });
+  const first = await f.rpc.pulse_action!({ id: item.id, action: "dismiss" });
   const id = first.items.find((i: { id: string }) => i.id === item.id).pending.length ? JSON.parse(fs.readFileSync(path.join(f.mirror, "commands.jsonl"), "utf8").trim()).id : null;
   assert.ok(id);
   // The app acknowledges, then republishes.
   fs.writeFileSync(path.join(f.mirror, "commands.ack.jsonl"), `${JSON.stringify({ id })}\n`);
   f.publishSnapshot([{ ...item, status: "dismissed" }], { generatedAt: new Date(Date.now() + 1000).toISOString() });
-  const snap = await f.rpc.thirdhand_snapshot!(null);
+  const snap = await f.rpc.pulse_snapshot!(null);
   const row = snap.items.find((i: { id: string }) => i.id === item.id);
   assert.equal(row.status, "dismissed");
   assert.equal(row.pending, undefined);
@@ -198,7 +198,7 @@ test("an unreachable mirror still renders a board and says why", async () => {
   const f = fakeBb();
   fs.rmSync(path.join(f.mirror, "snapshot.json"), { force: true });
   await plugin(f.bb as never);
-  const snap = await f.rpc.thirdhand_snapshot!(null);
+  const snap = await f.rpc.pulse_snapshot!(null);
   assert.equal(snap.mirror.state, "not-connected");
   assert.deepEqual(snap.items, []);
   assert.equal(snap.mirror.dir, f.mirror);

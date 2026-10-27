@@ -1,5 +1,5 @@
 /**
- * Picks the skills an "Action with agent" thread should load for a Third Hand item,
+ * Picks the skills an "Action with agent" thread should load for a Pulse item,
  * from rules in the plugin settings. Only skills installed on this machine are
  * suggested; the thread is told to read each SKILL.md.
  *
@@ -10,10 +10,10 @@
 import fs from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import type { ThirdHandItem } from "../types";
+import type { PulseItem } from "../types";
 
 export interface SkillRef { name: string; path: string; why: string }
-export interface SkillRule { name: string; why: string; match: (item: ThirdHandItem, text: string) => boolean }
+export interface SkillRule { name: string; why: string; match: (item: PulseItem, text: string) => boolean }
 
 const ROOTS = [".agents/skills", ".pi/agent/skills", ".claude/skills", ".codex/skills"].map((d) => path.join(homedir(), d));
 const MAX = 4;
@@ -44,7 +44,7 @@ function locate(name: string): string | null {
   return null;
 }
 
-export function skillsFor(item: ThirdHandItem, rules: SkillRule[]): SkillRef[] {
+export function skillsFor(item: PulseItem, rules: SkillRule[]): SkillRef[] {
   const text = [item.title, item.detail, item.url, item.id, ...(item.people ?? [])].filter(Boolean).join(" ");
   const out: SkillRef[] = [];
   for (const rule of rules) {

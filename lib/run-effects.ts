@@ -1,15 +1,15 @@
-import type { ThirdHandHistoryEntry, ThirdHandItem, ThirdHandRun } from "../types";
+import type { PulseHistoryEntry, PulseItem, PulseRun } from "../types";
 
 const STATUS_CHANGE = /(^|,)(status|resolved|reopened|snooze-expired)(,|$)/;
 const USER_STATUS = new Set(["done", "dismissed", "snoozed", "open"]);
-const changesStatus = (h: ThirdHandHistoryEntry) => STATUS_CHANGE.test(h.change) || USER_STATUS.has(h.change);
+const changesStatus = (h: PulseHistoryEntry) => STATUS_CHANGE.test(h.change) || USER_STATUS.has(h.change);
 
 /** Items whose history records this run creating or resolving them, between its previous run and this one. */
-export function runEffects(run: ThirdHandRun, runs: ThirdHandRun[], items: ThirdHandItem[]) {
+export function runEffects(run: PulseRun, runs: PulseRun[], items: PulseItem[]) {
   const prev = runs.find((r) => r.run === run.run && r.finishedAt < run.finishedAt);
   const from = run.startedAt ?? run.previousFinishedAt ?? prev?.finishedAt ?? "";
-  const added: ThirdHandItem[] = [];
-  const resolved: ThirdHandItem[] = [];
+  const added: PulseItem[] = [];
+  const resolved: PulseItem[] = [];
   for (const i of items) {
     const history = i.history ?? [];
     // 0.1.6 and earlier recorded an agent resolve as a plain "status" change. Only count one as a

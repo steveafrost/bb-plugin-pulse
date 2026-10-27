@@ -1,6 +1,6 @@
 # Microsoft 365: Outlook mail and Teams calendar
 
-Read Microsoft 365 mail and the Teams calendar from Third Hand with `msteams-mcp`, an MCP server that
+Read Microsoft 365 mail and the Teams calendar from Pulse with `msteams-mcp`, an MCP server that
 also ships a CLI.
 
 Status: the CLI and its command surface are documented here; the **login step was not completed**
@@ -42,7 +42,7 @@ msteams search   --json "<query>"
 ## Trap — pre-login reads fail fast, and that is fine
 
 Before you log in, reads exit immediately with `AUTH_REQUIRED`. That is a clean, cheap failure, so a
-scheduled Third Hand run can safely include this source and simply report the source as unavailable until
+scheduled Pulse run can safely include this source and simply report the source as unavailable until
 you complete the login. It will not hang or burn tokens.
 
 ## Trap — token refresh is headless-only
@@ -54,7 +54,7 @@ to redo this occasionally.
 ## Trap — there is no read-only flag
 
 The CLI exposes roughly fourteen **write** tools (send, reply, react and so on) and gates them only
-by prompt. Third Hand's prompts forbid sending, but on this source that prohibition is doing more work
+by prompt. Pulse's prompts forbid sending, but on this source that prohibition is doing more work
 than usual. Write the `sources` text accordingly — enumerate the forbidden actions rather than
 relying on "read only".
 
@@ -79,6 +79,6 @@ app registration in Entra ID:
 | `Calendars.Read` | Calendar read |
 
 `GET https://graph.microsoft.com/v1.0/me/messages` and
-`GET https://graph.microsoft.com/v1.0/me/events`. Both are read-only scopes, which matches Third Hand's
+`GET https://graph.microsoft.com/v1.0/me/events`. Both are read-only scopes, which matches Pulse's
 needs better than the CLI's fourteen write tools. Registering the app requires tenant admin consent,
 which is exactly the overhead `msteams-mcp` was chosen to avoid.
