@@ -46,7 +46,8 @@ test("server#1 a failure in a pinned (user) thread is recorded, never retried", 
 });
 
 test("server#1 a sent run with no log after 45 minutes is overdue, and a failing schedule is logged", async () => {
-  const f = fakeBb({ overrides: { "threads.send": () => { throw new Error("JSON-RPC request timed out: thread/resume"); } } });
+  // Daily and Weekly far from now, so the Hourly doesn't yield to them (the 16:30 default would near 16:00).
+  const f = fakeBb({ settings: { dailyCron: cronAt(180), weeklyCron: cronAt(240) }, overrides: { "threads.send": () => { throw new Error("JSON-RPC request timed out: thread/resume"); } } });
   await plugin(f.bb as never);
   f.kv.set("thread:hourly", "thr_run");
   // The hourly default may not be due now (weekday hours); call the registered callback directly.
@@ -79,7 +80,7 @@ test("server#2 a scheduled run skips a thread that has been busy for over an hou
   f.kv.set("thread:hourly", "thr_run");
   f.kv.set("dispatches:hourly", [{ at: new Date(Date.now() - 70 * MIN).toISOString(), threadId: "thr_run", trigger: "schedule" }]);
   // Daily and Weekly far from now, so the Hourly doesn't yield to them.
-  f.changeSettings({});
+  f.changeSettings({ dailyCron: cronAt(180), weeklyCron: cronAt(240) });
   await f.tick("hourly");
   assert.equal(f.count("threads.send"), 0);
   assert.match((await f.automation("hourly")).failure.error, /busy for 7\d min/);
@@ -397,7 +398,7 @@ test("binks a hung thread is reported stuck even when a Pulse prompt is already 
   f.kv.set("thread:hourly", "thr_run");
   f.kv.set("dispatches:hourly", [{ at: new Date(Date.now() - 70 * MIN).toISOString(), threadId: "thr_run", trigger: "manual" }]);
   f.queues.set("thr_run", [{ id: "q1", updatedAt: 1, payload: { kind: "user" }, content: [{ type: "text", text: "[Pulse manual hourly run · old]" }] }]);
-  f.changeSettings({});
+  f.changeSettings({ dailyCron: cronAt(180), weeklyCron: cronAt(240) });
   await f.tick("hourly");
   assert.equal(f.count("queued.update"), 0, "the queued prompt is left alone");
   assert.match((await f.automation("hourly")).failure.error, /busy for 7\d min/);
