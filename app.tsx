@@ -871,6 +871,25 @@ function PulseHeader() {
 const ACTION_LABEL: Record<ItemAction, string> = { done: "Marked done", dismiss: "Dismissed", snooze: "Snoozed", reopen: "Reopened" };
 type Undo = { label: string; items: { id: string; prev: "open" | "waiting" }[]; at: number };
 const UNDO_MS = 6000;
+const LEAVE_MS = 160;
+
+/** Fold the cards closed before they leave the board, so the rows below slide up instead of jumping. */
+function collapseRows(root: HTMLElement | null, ids: string[]): Promise<unknown> {
+  if (!root || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return Promise.resolve();
+  return Promise.all(ids.map((id) => {
+    const el = root.querySelector<HTMLElement>(`[data-item-id="${CSS.escape(id)}"]`);
+    if (!el?.animate) return undefined;
+    const gap = parseFloat(getComputedStyle(el.parentElement ?? el).rowGap) || 0;
+    // Last in its list: no gap below it to give back.
+    const pull = el.nextElementSibling ? -gap : 0;
+    el.style.overflow = "hidden";
+    el.style.pointerEvents = "none";
+    return el.animate(
+      [{ height: `${el.offsetHeight}px`, opacity: 1 }, { height: "0px", opacity: 0, paddingTop: "0px", paddingBottom: "0px", borderWidth: "0px", marginBottom: `${pull}px` }],
+      { duration: LEAVE_MS, easing: "ease-in", fill: "forwards" },
+    ).finished.catch(() => undefined);
+  }));
+}
 
 const SHORTCUTS: [string, string][] = [
   ["j / k", "Next / previous item"], ["Enter", "Open the source"], ["i", "Show or hide details"], ["e", "Done"], ["s", "Snooze"],
@@ -905,6 +924,8 @@ function PulsePage() {
   /** Move the card at once; the server's snapshot replaces the guess, and a failure puts it back. */
   const act = useCallback(async (item: PulseItem, action: ItemAction, until?: string, { silent = false } = {}) => {
     const target = action === "reopen" ? "open" : action === "done" ? "done" : action === "dismiss" ? "dismissed" : "snoozed";
+    // Done and Dismiss take the card off the board; Snooze only moves it to Later.
+    if (target === "done" || target === "dismissed") await collapseRows(board.current, [item.id]);
     setOverlay(item.id, { status: target as PulseItem["status"], snoozedUntil: action === "snooze" ? until ?? null : null });
     const ok = await mutate(rpc.call("pulse_action", until ? { id: item.id, action, until } : { id: item.id, action }));
     setOverlay(item.id, null);
@@ -942,6 +963,9 @@ function PulsePage() {
 
   const seenRef = lastViewedOnOpen.current ?? null;
   const { counts } = useMemo(() => boardSummary(items, seenRef), [items, seenRef]);
+  // A source tab stays once shown, so clearing its last item doesn't slide the other tabs over.
+  const shownFilters = useRef(new Set<Source>());
+  for (const f of FILTERS) if (f !== "all" && counts[f]) shownFilters.current.add(f);
   const visible = filter === "all" ? items : items.filter((i) => i.source === filter);
   const buckets: Record<Horizon, PulseItem[]> = { now: [], next: [], later: [], info: [] };
   for (const i of visible) if (isActive(i)) buckets[horizonOf(i)].push(i);
@@ -976,6 +1000,7 @@ function PulsePage() {
 
   const clearFyis = useCallback(async (rows: PulseItem[]) => {
     const open = rows.filter((i) => i.status === "open");
+    await collapseRows(board.current, open.map((i) => i.id));
     for (const i of open) setOverlay(i.id, { status: "dismissed" });
     await Promise.all(open.map((i) => mutate(rpc.call("pulse_action", { id: i.id, action: "dismiss" }))));
     for (const i of open) setOverlay(i.id, null);
@@ -1031,10 +1056,10 @@ function PulsePage() {
       <div className="pulse__inner">
         <header className="pulse-top">
           <nav className="pulse-filters" aria-label="Filter by source">
-            {FILTERS.filter((f) => f === "all" || counts[f] || filter === f).map((f) => (
+            {FILTERS.filter((f) => f === "all" || counts[f] || filter === f || shownFilters.current.has(f)).map((f) => (
               <button key={f} type="button" className={`pulse-filter${filter === f ? " pulse-filter--on" : ""}`} onClick={() => setFilter(f)} aria-pressed={filter === f}>
                 {f === "all" ? "All" : SOURCE_LABEL[f]}
-                {counts[f] ? <span className="pulse-filter__n">{counts[f]}</span> : null}
+                {f !== "all" || counts[f] ? <span className="pulse-filter__n">{counts[f] ?? 0}</span> : null}
               </button>
             ))}
           </nav>
@@ -1052,19 +1077,9 @@ function PulsePage() {
           ) : null}
         </header>
 
-        {undo ? (
-          <div className="pulse-undo" role="status">
-            <span className="pulse-undo__text">{undo.label}</span>
-            <button type="button" className="pulse-link" onClick={() => void doUndo()}>Undo</button>
-          </div>
-        ) : null}
-
-        {error ? (
+        {error && !snapshot ? (
           <div className="pulse-error" role="alert">
-            {error}{" "}
-            {snapshot
-              ? <button type="button" className="pulse-link" onClick={() => setError("")}>Dismiss</button>
-              : <button type="button" className="pulse-link" onClick={retry}>Retry</button>}
+            {error} <button type="button" className="pulse-link" onClick={retry}>Retry</button>
           </div>
         ) : null}
 
@@ -1108,6 +1123,22 @@ function PulsePage() {
             ))}
           </>
         ) : null}
+
+        {/* Undo and action errors float over the board, so showing or hiding them never moves the cards. */}
+        <div className="pulse-toasts"><div className="pulse-toasts__stack">
+          {error && snapshot ? (
+            <div className="pulse-toast pulse-toast--error" role="alert">
+              <span className="pulse-toast__text">{error}</span>
+              <button type="button" className="pulse-link" onClick={() => setError("")}>Dismiss</button>
+            </div>
+          ) : null}
+          {undo ? (
+            <div className="pulse-toast" role="status">
+              <span className="pulse-toast__text">{undo.label}</span>
+              <button type="button" className="pulse-link" onClick={() => void doUndo()}>Undo</button>
+            </div>
+          ) : null}
+        </div></div>
 
         {shortcuts ? (
           <div className="pulse-shortcuts" role="dialog" aria-label="Keyboard shortcuts">
