@@ -457,6 +457,19 @@ test("stuck queue: a pinned thread that stopped keeps the user's queue and gets 
   assert.deepEqual(f.sends(), ["thr_pin"]);
 });
 
+test("stuck queue: an errored run thread holding someone else's message is not archived; the run goes there", async () => {
+  const f = fakeBb({ threads: { thr_err: { status: "error" } } });
+  await plugin(f.bb as never);
+  f.kv.set("thread:hourly", "thr_err");
+  f.queues.set("thr_err", [queuedRun("q1"), makeQueueEntry({ id: "qu" })]);
+  const res = await f.rpc.pulse_run_now!({ run: "hourly" });
+  assert.equal(res.threadId, "thr_err", "a turn here lets bb deliver the queued message after it");
+  assert.deepEqual(f.queues.get("thr_err")!.map((r) => r.id), ["qu"], "only Pulse's stranded prompt is dropped");
+  assert.equal(f.count("threads.archive"), 0);
+  assert.equal(f.count("threads.spawn"), 0);
+  assert.deepEqual(f.sends(), ["thr_err"]);
+});
+
 test("stuck queue: an idle thread with a stranded prompt gets a fresh send, not a refreshed queue", async () => {
   const f = fakeBb({ threads: { thr_idle: { status: "idle" } } });
   await plugin(f.bb as never);

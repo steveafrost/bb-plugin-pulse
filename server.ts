@@ -626,6 +626,9 @@ export default async function plugin(bb: BbPluginApi) {
       const stopped = status === "error" || status === "idle";
       const queued = (thread?.queuedMessageCount ?? 0) > 0;
       const busy = status === "active" || status === "starting" || status === "stopping" || status === "pending" || (queued && !stopped);
+      // Someone else's message still queued here. Archiving the thread would strand it for good; a
+      // turn on this thread drains it once the run ends, so the run goes here instead.
+      let othersQueued = false;
       if (stopped && queued) {
         const list = await rows();
         if (!list) return skipped(`skipped: could not read the queue on ${id}`);
@@ -639,7 +642,7 @@ export default async function plugin(bb: BbPluginApi) {
         // Drop Pulse's own stranded prompts (and, on its own threads, pending retries) so they
         // can't fire later on top of this run. Anything else in the queue is the user's.
         for (const row of list) {
-          if (!removableRow(row, name, pinned)) continue;
+          if (!removableRow(row, name, pinned)) { othersQueued = true; continue; }
           try {
             await bb.sdk.threads.queuedMessages.delete({ threadId: id, queuedMessageId: row.id });
             bb.log.info(`dropped a stranded queued run on ${id} (thread ${status})`);
@@ -649,7 +652,7 @@ export default async function plugin(bb: BbPluginApi) {
         }
       }
       const old = !!thread?.createdAt && Date.now() - stamp(thread.createdAt) > ROTATE_MS;
-      if (!pinned && !busy && (old || status === "error")) {
+      if (!pinned && !busy && !othersQueued && (old || status === "error")) {
         // State lives in the store and memory files, not the thread; a day-old thread only adds
         // context to resume, compact and time out on, and a thread that stopped on an error
         // (often a failed compaction) tends to fail again. Start fresh and retire this one below.
