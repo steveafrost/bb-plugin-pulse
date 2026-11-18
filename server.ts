@@ -545,10 +545,29 @@ export default async function plugin(bb: BbPluginApi) {
       const target = await resolveRunThread(name, { prune: true });
       if (!target) break;
       const { id, pinned, thread } = target;
-      const busy = thread?.status === "active" || thread?.status === "starting" || (thread?.queuedMessageCount ?? 0) > 0;
-      if (!pinned && !busy && thread?.createdAt && Date.now() - stamp(thread.createdAt) > ROTATE_MS) {
+      // bb only drains a thread's queue when a turn ends, so a queue on a thread that has stopped
+      // (on an error, or idle) never moves. Counting it as busy would refresh the same queued
+      // prompt forever and never rotate the thread.
+      const status = thread?.status;
+      const stopped = status === "error" || status === "idle";
+      const queued = (thread?.queuedMessageCount ?? 0) > 0;
+      const busy = status === "active" || status === "starting" || status === "stopping" || status === "pending" || (queued && !stopped);
+      if (stopped && queued) {
+        // Drop Pulse's own stranded prompts (and, on its own threads, pending retries) so they
+        // can't fire later on top of this run. Anything else in the queue is the user's.
+        for (const row of await queuedRows(id)) {
+          if (!isRunRow(row) && (pinned || row.payload?.kind !== "retry")) continue;
+          await bb.sdk.threads.queuedMessages.delete({ threadId: id, queuedMessageId: row.id }).then(
+            () => bb.log.info(`dropped a stranded queued run on ${id} (thread ${status})`),
+            (error) => bb.log.warn(`could not drop the stranded queued run on ${id}: ${message(error)}`),
+          );
+        }
+      }
+      const old = !!thread?.createdAt && Date.now() - stamp(thread.createdAt) > ROTATE_MS;
+      if (!pinned && !busy && (old || status === "error")) {
         // State lives in the store and memory files, not the thread; a day-old thread only adds
-        // context to resume, compact and time out on. Start fresh and retire this one below.
+        // context to resume, compact and time out on, and a thread that stopped on an error
+        // (often a failed compaction) tends to fail again. Start fresh and retire this one below.
         retire = id;
         break;
       }

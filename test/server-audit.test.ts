@@ -93,7 +93,8 @@ test("server#2 a new run drops a pending automatic retry instead of running twic
   f.queues.set("thr_run", [{ id: "qr", updatedAt: 1, payload: { kind: "retry" }, content: [{ type: "text", text: "[Pulse scheduled hourly run · old]" }] }]);
   await f.rpc.pulse_run_now!({ run: "hourly" });
   assert.deepEqual(f.calls["queued.delete"]?.map(([a]) => (a as { queuedMessageId: string }).queuedMessageId), ["qr"]);
-  assert.equal(f.count("threads.send"), 1);
+  // The thread stopped on an error, so the run goes to a fresh thread: still exactly one run.
+  assert.equal(f.count("threads.send") + f.count("threads.spawn"), 1);
 });
 
 test("server#4 an Hourly tick that yielded to the Daily is not caught up later", async () => {
@@ -402,4 +403,45 @@ test("binks a hung thread is reported stuck even when a Pulse prompt is already 
   await f.tick("hourly");
   assert.equal(f.count("queued.update"), 0, "the queued prompt is left alone");
   assert.match((await f.automation("hourly")).failure.error, /busy for 7\d min/);
+});
+
+// ---- 0.1.24: a queue on a stopped thread never drains ----
+const queuedRun = (id: string, kind = "user") => ({ id, updatedAt: 1, payload: { kind }, content: [{ type: "text", text: "[Pulse scheduled hourly run · Nov 7]" }] });
+
+test("stuck queue: a run thread that stopped on an error is retired, not refreshed forever", async () => {
+  const f = fakeBb({ threads: { thr_err: { status: "error" } } });
+  await plugin(f.bb as never);
+  f.kv.set("thread:hourly", "thr_err");
+  f.queues.set("thr_err", [queuedRun("q1"), queuedRun("qr", "retry")]);
+  const res = await f.rpc.pulse_run_now!({ run: "hourly" });
+  assert.equal(res.threadId, "thr_new");
+  assert.equal(f.count("queued.update"), 0, "the stranded prompt is not refreshed");
+  assert.deepEqual(f.queues.get("thr_err"), [], "Pulse's stranded prompt and retry are dropped");
+  assert.deepEqual(f.calls["threads.archive"]?.map(([a]) => (a as { threadId: string }).threadId), ["thr_err"]);
+  assert.equal(store.getRunThreads(f.home).hourly, "thr_new");
+});
+
+test("stuck queue: a pinned thread that stopped keeps the user's queue and gets the run directly", async () => {
+  const f = fakeBb({ threads: { thr_pin: { status: "error" } } });
+  await plugin(f.bb as never);
+  f.changeSettings({ hourlyThread: "thr_pin" });
+  const mine = { id: "qu", updatedAt: 1, payload: { kind: "user" }, content: [{ type: "text", text: "my own note" }] };
+  f.queues.set("thr_pin", [queuedRun("q1"), queuedRun("qr", "retry"), mine]);
+  const res = await f.rpc.pulse_run_now!({ run: "hourly" });
+  assert.equal(res.threadId, "thr_pin");
+  assert.deepEqual(f.queues.get("thr_pin")!.map((r) => r.id), ["qr", "qu"], "only Pulse's own run prompt is dropped");
+  assert.equal(f.count("threads.archive"), 0);
+  assert.deepEqual(f.sends(), ["thr_pin"]);
+});
+
+test("stuck queue: an idle thread with a stranded prompt gets a fresh send, not a refreshed queue", async () => {
+  const f = fakeBb({ threads: { thr_idle: { status: "idle" } } });
+  await plugin(f.bb as never);
+  f.kv.set("thread:hourly", "thr_idle");
+  f.queues.set("thr_idle", [queuedRun("q1")]);
+  const res = await f.rpc.pulse_run_now!({ run: "hourly" });
+  assert.equal(res.threadId, "thr_idle", "a young idle thread is kept");
+  assert.equal(f.count("queued.update"), 0);
+  assert.deepEqual(f.queues.get("thr_idle"), []);
+  assert.deepEqual(f.sends(), ["thr_idle"]);
 });
