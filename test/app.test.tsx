@@ -489,3 +489,33 @@ test("compact FYI expansion agrees across click and keyboard", async () => {
     await waitFor(() => assert.equal(row.getAttribute("aria-expanded"), "false"));
   } finally { slot.lifecycle.unmount(); }
 });
+
+test("a card folding off the board is skipped by the keyboard at once", async () => {
+  const proto = (dom.window as any).HTMLElement.prototype;
+  (dom.window as any).matchMedia = () => ({ matches: false });
+  const release: (() => void)[] = [];
+  proto.animate = () => ({ finished: new Promise<void>((resolve) => release.push(resolve)) });
+  (globalThis as any).getComputedStyle = dom.window.getComputedStyle.bind(dom.window);
+  // Plain ids: the CSS.escape stub above doesn't produce selectors that match a ':'.
+  const items = ["a", "b", "c"].map((id) => ({ ...baseItem, id, title: `Card ${id.toUpperCase()}` }));
+  const { slot } = await mount({ items });
+  try {
+    const row = async (title: string) => (await slot.findByText(title)).closest("li")!;
+    // The roving tab stop is the card the board treats as focused.
+    const current = () => document.querySelector('li[data-item-id][tabindex="0"]')?.getAttribute("data-item-id");
+    const c = await row("Card C");
+    act(() => { c.focus(); });
+    await waitFor(() => assert.equal(current(), "c"));
+    act(() => { fireEvent.keyDown(c, { key: "e" }); });
+    await waitFor(() => assert.equal(current(), "b"));
+    // C is still folding closed: the next Done must move on to A, not back to C.
+    const b = await row("Card B");
+    act(() => { b.focus(); fireEvent.keyDown(b, { key: "e" }); });
+    await waitFor(() => assert.equal(current(), "a"));
+  } finally {
+    for (const r of release) r();
+    delete proto.animate;
+    delete (dom.window as any).matchMedia;
+    slot.lifecycle.unmount();
+  }
+});

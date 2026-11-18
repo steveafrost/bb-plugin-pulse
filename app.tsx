@@ -1134,6 +1134,8 @@ function PulsePage() {
   const [flashId, setFlashId] = useState<string | null>(null);
   const [shortcuts, setShortcuts] = useState(false);
   const board = useRef<HTMLDivElement>(null);
+  /** Cards folding closed on their way off the board. The keyboard skips them at once, not after the fold. */
+  const leaving = useRef(new Set<string>());
 
   // "New" markers compare against the last time the user looked; leaving the panel counts as looking.
   const lastViewedOnOpen = useRef<string | null | undefined>(undefined);
@@ -1152,8 +1154,12 @@ function PulsePage() {
   const act = useCallback(async (item: PulseItem, action: ItemAction, until?: string, { silent = false } = {}) => {
     const target = action === "reopen" ? "open" : action === "done" ? "done" : action === "dismiss" ? "dismissed" : "snoozed";
     // Done and Dismiss take the card off the board; Snooze only moves it to Later.
-    if (target === "done" || target === "dismissed") await collapseRows(board.current, [item.id]);
+    if (target === "done" || target === "dismissed") {
+      leaving.current.add(item.id);
+      await collapseRows(board.current, [item.id]);
+    }
     setOverlay(item.id, { status: target as PulseItem["status"], snoozedUntil: action === "snooze" ? until ?? null : null });
+    leaving.current.delete(item.id);
     const ok = await mutate(rpc.call("pulse_action", until ? { id: item.id, action, until } : { id: item.id, action }));
     setOverlay(item.id, null);
     if (ok && !silent && action !== "reopen" && (item.status === "open" || item.status === "waiting")) {
@@ -1227,8 +1233,9 @@ function PulsePage() {
 
   const clearFyis = useCallback(async (rows: PulseItem[]) => {
     const open = rows.filter((i) => i.status === "open");
+    for (const i of open) leaving.current.add(i.id);
     await collapseRows(board.current, open.map((i) => i.id));
-    for (const i of open) setOverlay(i.id, { status: "dismissed" });
+    for (const i of open) { setOverlay(i.id, { status: "dismissed" }); leaving.current.delete(i.id); }
     await Promise.all(open.map((i) => mutate(rpc.call("pulse_action", { id: i.id, action: "dismiss" }))));
     for (const i of open) setOverlay(i.id, null);
     if (open.length) setUndo({ label: `Cleared ${open.length} FYI${open.length > 1 ? "s" : ""}`, items: open.map((i) => ({ id: i.id, prev: "open" as const })), at: Date.now() });
@@ -1241,17 +1248,18 @@ function PulsePage() {
     if (t.closest('input, textarea, select, [contenteditable="true"], [role="menu"], .pulse-pop')) return;
     if (shortcuts && (e.key === "Escape" || e.key === "?") && (!t.closest('[role="dialog"]') || t.closest('.pulse-shortcuts'))) { e.preventDefault(); setShortcuts(false); return; }
     if (t.closest('[role="dialog"]')) return;
-    const index = order.findIndex((i) => i.id === focusTarget);
-    const cur = index >= 0 ? order[index] : undefined;
+    const nav = order.filter((i) => !leaving.current.has(i.id));
+    const index = nav.findIndex((i) => i.id === focusTarget);
+    const cur = index >= 0 ? nav[index] : undefined;
     const row = cur ? board.current?.querySelector<HTMLElement>(`[data-item-id="${CSS.escape(cur.id)}"]`) : null;
     const onRow = !!row && t === row;
-    const neighbour = () => order[index + 1]?.id ?? order[index - 1]?.id ?? null;
+    const neighbour = () => nav[index + 1]?.id ?? nav[index - 1]?.id ?? null;
     const actionable = cur && (cur.status === "open" || cur.status === "waiting");
     const press = (label: string) => row?.querySelector<HTMLElement>(`[aria-label="${label}"]`)?.click();
     let handled = true;
     switch (e.key) {
-      case "j": case "ArrowDown": focusRow(order[Math.min(order.length - 1, index + 1)]?.id ?? null); break;
-      case "k": case "ArrowUp": focusRow(order[Math.max(0, index - 1)]?.id ?? null); break;
+      case "j": case "ArrowDown": focusRow(nav[Math.min(nav.length - 1, index + 1)]?.id ?? null); break;
+      case "k": case "ArrowUp": focusRow(nav[Math.max(0, index - 1)]?.id ?? null); break;
       case "Enter": if (onRow) row?.querySelector<HTMLElement>(".pulse-item__title .pulse-link")?.click(); else handled = false; break;
       case "i": if (cur) setExpandedId((id) => (id === cur.id ? null : cur.id)); break;
       case "e": if (actionable) { const next = neighbour(); void act(cur, "done"); focusRow(next); } break;
