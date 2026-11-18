@@ -49,7 +49,7 @@ test("ui#6 the run warning names the run and clears once a later run reads clean
   assert.ok(runProblem({ recentRuns: [run({ finishedAt: "2026-10-26T14:22:00Z", sources: [] }), daily], automations: autos }));
 });
 
-test("binks: a clean run clears a source's error only if it read that source", () => {
+test("review: a clean run clears a source's error only if it read that source", () => {
   // An earlier Hourly read Slack, so "slack" in the Daily's error names a source.
   const earlier = run({ finishedAt: "2026-10-25T20:00:00Z", sources: ["slack", "gmail"] });
   const daily = run({ run: "daily", finishedAt: "2026-10-25T21:30:00Z", sources: ["gmail"], errors: ["slack: token expired"] });
@@ -62,7 +62,7 @@ test("binks: a clean run clears a source's error only if it read that source", (
   assert.equal(runProblem({ recentRuns: [withSlack, gmailOnly, daily, earlier], automations: autos }), null);
 });
 
-test("binks: an error that names no source needs a later run that read everything the failed run read", () => {
+test("review: an error that names no source needs a later run that read everything the failed run read", () => {
   const daily = run({ run: "daily", finishedAt: "2026-10-25T21:30:00Z", sources: ["slack", "calendar"], errors: ["CLI missing"] });
   assert.equal(fixedLater(daily, [run({ finishedAt: "2026-10-26T09:00:00Z", sources: ["slack"] }), daily]), undefined);
   const both = run({ finishedAt: "2026-10-26T10:00:00Z", sources: ["calendar", "slack", "gmail"] });
@@ -73,7 +73,7 @@ test("binks: an error that names no source needs a later run that read everythin
   assert.equal(fixedLater(tgw, [slack, tgw]), slack);
 });
 
-test("binks: a fixed newer failure doesn't hide an older one that is still broken", () => {
+test("review: a fixed newer failure doesn't hide an older one that is still broken", () => {
   const seen = run({ finishedAt: "2026-10-25T08:00:00Z", sources: ["slack", "calendar"] });
   const calendar = run({ run: "daily", finishedAt: "2026-10-25T21:30:00Z", sources: ["slack"], errors: ["calendar: 401"] });
   const slack = run({ finishedAt: "2026-10-26T09:00:00Z", sources: ["calendar"], errors: ["slack: token expired"] });
