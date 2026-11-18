@@ -29,6 +29,11 @@ instead. `pulse help` prints the full syntax; `pulse doctor` checks the store fi
   the clipboard and open `url` (default: the item's https url). They never send anything.
 - `pulse log --run <name> --summary "..." [--started <ISO>] [--sources slack,gmail,calendar]` at
   the end of every capture run; omit `--sources` when nothing was read.
+- **Tasks.** The panel can create, link, open and unlink Tasks when that plugin is available.
+  Pulse can close an item after every linked task is done. The setting is off by default and checks
+  every two minutes. Failed reads and missing tasks do not close the item. A user or capture reopen
+  holds until a linked task becomes incomplete and all linked tasks become done again. Removing all
+  links clears the hold.
 - **Agent threads.** The panel's robot button hands an item to a new thread in the Pulse sidebar
   section. The item records `action: { threadId, status: running|ready|failed, startedAt,
   finishedAt, summary, seenAt }`; `pulse show <id>` prints it. Status follows the thread

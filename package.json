@@ -15,7 +15,7 @@
   "scripts": {
     "build": "bb plugin build",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/*.test.mjs && node --experimental-strip-types --import ./test/resolve-ts.mjs --test test/*.test.ts"
+    "test": "node --test test/*.test.mjs && node --experimental-transform-types --import ./test/resolve-ts.mjs --test test/*.test.ts && node --import tsx --import ./test/ui-loader.mjs --test test/*.test.tsx"
   },
   "engines": {
     "bb": ">=0.46",
@@ -34,12 +34,20 @@
     ]
   },
   "dependencies": {
-    "zod": "^4.6.5"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@get-bb/plugin-sdk": "0.6.37",
+    "@testing-library/react": "^16.3.3",
+    "@types/jsdom": "^30.0.0",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.3.0",
+    "jsdom": "^29.1.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "sonner": "1.7.4",
+    "tsx": "^4.23.15",
     "typescript": "^5.7.0"
   }
 }

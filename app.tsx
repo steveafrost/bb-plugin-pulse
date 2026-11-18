@@ -1,5 +1,6 @@
 // bb-plugin-pulse — panel frontend. Compiled by `bb plugin build`.
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { toast } from "sonner";
 import {
   definePluginApp,
   experimental_Icon as Icon,
@@ -15,6 +16,7 @@ import type { Automation, ItemAction, MissedRun, PulseHistoryEntry, PulseItem, P
 import { horizonOf, horizonReason, type Horizon } from "./lib/horizon";
 import { boardSummary, effectiveItem, fixedLater, isActive, isNew, isNewer, logRows, nextRun, runProblem, snoozeOptions, withOverlay, type RunProblem } from "./lib/panel";
 import "./app.css";
+import { TaskIntegrationSettings } from "./components/task-settings";
 
 const SOURCE_LABEL: Record<Source, string> = { slack: "Slack", gmail: "Email", calendar: "Calendar", github: "GitHub", docs: "Docs", other: "Other" };
 const KIND_LABEL: Record<string, string> = {
@@ -22,6 +24,9 @@ const KIND_LABEL: Record<string, string> = {
 };
 const FILTERS: ("all" | Source)[] = ["all", "slack", "gmail", "calendar", "docs", "github", "other"];
 type RunName = "hourly" | "daily" | "weekly";
+type TaskStatus = "todo" | "backlog" | "done";
+type TaskStatusFilter = TaskStatus | "all";
+const TASK_STATUS_PILLS: { value: TaskStatusFilter; label: string }[] = [{ value: "todo", label: "Todo" }, { value: "backlog", label: "Backlog" }, { value: "done", label: "Done" }, { value: "all", label: "All" }];
 
 function errorText(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
@@ -80,8 +85,8 @@ function inlineCode(text: unknown): React.ReactNode[] {
 // either surface show in one place, and an out-of-order response never replaces a newer one.
 
 type Rpc = ReturnType<typeof useRpc<typeof rpcContract>>;
-type Shared = { snapshot: PulseSnapshot | null; error: string; overlay: Record<string, Partial<PulseItem>> };
-let shared: Shared = { snapshot: null, error: "", overlay: {} };
+type Shared = { snapshot: PulseSnapshot | null; error: string; overlay: Record<string, Partial<PulseItem>>; taskDialog: { item: PulseItem; mode: "create" | "link"; recommendation: TaskRecommendation | null; trigger: HTMLElement | null } | null };
+let shared: Shared = { snapshot: null, error: "", overlay: {}, taskDialog: null };
 const listeners = new Set<() => void>();
 const setShared = (patch: Partial<Shared>) => { shared = { ...shared, ...patch }; listeners.forEach((f) => f()); };
 const subscribe = (f: () => void) => { listeners.add(f); return () => { listeners.delete(f); }; };
@@ -89,6 +94,19 @@ const accept = (next: unknown) => {
   const snap = next as PulseSnapshot | null;
   if (snap && Array.isArray(snap.items) && isNewer(shared.snapshot, snap)) setShared({ snapshot: snap });
 };
+function openLinkedTask(key: string) {
+  // The SDK URL opener uses Browser. Stay in the current BB view for this cross-plugin route.
+  window.location.assign(`/plugins/tasks/tasks/task/${encodeURIComponent(key)}`);
+}
+function taskSucceeded(result: unknown, itemId: string, key?: string, created = false) {
+  accept(result);
+  const taskKey = key ?? (result as PulseSnapshot).items.find((item) => item.id === itemId)?.taskLinks?.at(-1)?.key;
+  setShared({ error: "" });
+  toast.success(created ? `Created and linked ${taskKey ?? "task"}` : `Linked ${taskKey ?? "task"}`, {
+    position: "top-right", duration: 8000,
+    ...(taskKey ? { action: { label: "Open task", onClick: () => openLinkedTask(taskKey) } } : {}),
+  });
+}
 let rpcRef: Rpc | null = null;
 let fetchTimer: ReturnType<typeof setTimeout> | undefined;
 let inflight = false;
@@ -171,7 +189,7 @@ function usePulse() {
     if (patch) overlay[id] = patch; else delete overlay[id];
     setShared({ overlay });
   }, []);
-  return { rpc, snapshot: state.snapshot, error: state.error, overlay: state.overlay, setError, setOverlay, mutate, call, retry: () => requestRefetch(0) };
+  return { rpc, snapshot: state.snapshot, error: state.error, overlay: state.overlay, taskDialog: state.taskDialog, setError, setOverlay, mutate, call, retry: () => requestRefetch(0) };
 }
 
 // ---- Menus ----
@@ -280,16 +298,38 @@ function destination(url: string): string {
 }
 
 /** Sparkle menu: copy prepared text and/or open the source. Never sends: the user pastes and sends. */
-function QuickMenu({ item }: { item: PulseItem }) {
+type TaskCandidate = { id: string; key: string; title: string; status: string; projectId: string; labelIds: string[] };
+type TaskProject = { id: string; name: string; prefix: string };
+type TaskLabel = { id: string; name: string; projectId: string; color: string };
+type TaskRecommendation = { match: TaskCandidate | null; related: TaskCandidate | null; suggestions: TaskCandidate[]; projects: TaskProject[] };
+
+function QuickMenu({ item, rpc, tasksAvailable, suggestions, visible }: { item: PulseItem; rpc: Rpc; tasksAvailable: boolean; suggestions: PulseSnapshot["taskSuggestions"]; visible: boolean }) {
   const m = useMenu();
   const [copied, setCopied] = useState<string | null>(null);
+  const [recommendation, setRecommendation] = useState<TaskRecommendation | null>(null);
+  const [recommendError, setRecommendError] = useState("");
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    if (!m.open || !tasksAvailable || suggestions !== "available") return;
+    let live = true;
+    setLoading(true); setRecommendError(""); setRecommendation(null);
+    rpc.call("pulse_task_recommend", { id: item.id }).then((result: TaskRecommendation) => { if (live) setRecommendation(result); })
+      .catch((e: unknown) => { if (live) setRecommendError(errorText(e)); })
+      .finally(() => { if (live) setLoading(false); });
+    return () => { live = false; };
+  }, [m.open, tasksAvailable, suggestions, item.id, rpc]);
   useEffect(() => {
     if (!copied) return;
     const t = setTimeout(() => setCopied(null), 2500);
     return () => clearTimeout(t);
   }, [copied]);
+  useEffect(() => {
+    if (m.open && !loading && document.activeElement === m.trigger.current) m.root.current?.querySelector<HTMLElement>('[role="menuitem"]:not([disabled])')?.focus();
+  }, [m.open, loading]);
+  useEffect(() => { if (!visible && m.open) m.close(false); }, [visible, m.open, m.close]);
   const actions = item.quickActions ?? [];
-  if (!actions.length) {
+  if (!visible) return null;
+  if (!actions.length && !tasksAvailable) {
     return <button type="button" className="pulse-icon-btn" disabled aria-label="No quick actions" data-tip="No quick actions for this item"><Icon name="pulse-sparkles" fallback="Circle" className="pulse-icon" aria-hidden /></button>;
   }
   const run = (a: QuickAction) => {
@@ -298,7 +338,7 @@ function QuickMenu({ item }: { item: PulseItem }) {
   };
   return (
     <div className="pulse-menu" ref={m.root}>
-      <button ref={m.trigger} type="button" className={`pulse-icon-btn${copied ? " pulse-icon-btn--done" : ""}`} onClick={m.toggle}
+      <button ref={m.trigger} type="button" className={`pulse-icon-btn${copied ? " pulse-icon-btn--done" : ""}`} onClick={() => { if (!m.open && tasksAvailable && suggestions === "available") setLoading(true); m.toggle(); }}
         aria-label="Quick actions" aria-haspopup="menu" aria-expanded={m.open}
         data-tip={m.open ? undefined : copied ? `Copied for \u201c${copied}\u201d. Paste and send` : "Quick actions"}>
         <Icon name={copied ? "Check" : "pulse-sparkles"} fallback="Circle" className="pulse-icon" aria-hidden />
@@ -319,10 +359,176 @@ function QuickMenu({ item }: { item: PulseItem }) {
               ? <UrlLink key={i} href={url} role="menuitem" className="pulse-menu__item pulse-quick__item" onClick={() => run(a)}>{body}</UrlLink>
               : <button key={i} type="button" role="menuitem" className="pulse-menu__item pulse-quick__item" onClick={() => run(a)}>{body}</button>;
           })}
+          {tasksAvailable ? <>
+            <div className="pulse-menu__sep" role="separator" />
+            <div className="pulse-quick__section-title" role="presentation">Tasks</div>
+            <button type="button" role="menuitem" className="pulse-menu__item pulse-quick__item" onClick={() => { m.close(false); setShared({ taskDialog: { item, mode: "create", recommendation, trigger: m.trigger.current } }); }}><span className="pulse-quick__label">Create task…</span></button>
+            {suggestions === "available" && recommendation?.match ? <button type="button" role="menuitem" className="pulse-menu__item pulse-quick__item" onClick={() => { m.close(); void rpc.call("pulse_task_link", { id: item.id, key: recommendation.match!.key, recommended: true }).then((result) => taskSucceeded(result, item.id, recommendation.match!.key)).catch((e: unknown) => setShared({ error: errorText(e) })); }}>
+              <span className="pulse-quick__label">Link recommended task</span>
+              <span className="pulse-quick__hint">{recommendation.match.key} · {recommendation.match.title}</span>
+            </button> : null}
+            <button type="button" role="menuitem" className="pulse-menu__item pulse-quick__item" onClick={() => { m.close(false); setShared({ taskDialog: { item, mode: "link", recommendation, trigger: m.trigger.current } }); }}><span className="pulse-quick__label">Link custom task…</span></button>
+            {(item.taskLinks?.length ?? 0) > 0 ? <div className="pulse-quick__hint pulse-quick__status">
+              Linked to {(item.taskLinks ?? []).map((task, i) => <span key={task.id}>
+                {i > 0 ? ", " : ""}<button type="button" role="menuitem" className="pulse-link" title={task.title} aria-label={`Open linked task ${task.key}`} onClick={() => { m.close(); openLinkedTask(task.key); }}>{task.key}</button>
+              </span>)}
+            </div> : null}
+            {suggestions === "missing" || suggestions === "disabled" ? <span className="pulse-quick__hint pulse-quick__status">Install and enable Jev for task suggestions. Manual task actions still work.</span> : suggestions === "unavailable" ? <span className="pulse-quick__hint pulse-quick__status">Jev is unavailable. Manual task actions still work.</span> : null}
+            {(suggestions === "available" && (loading || recommendError)) ? <span className="pulse-quick__hint pulse-quick__status" aria-live="polite">{loading ? "Finding tasks…" : "Task suggestions unavailable."}</span> : null}
+          </> : null}
         </div>
       ) : null}
     </div>
   );
+}
+
+function TaskChoice({ task, disabled, suggested, onLink }: { task: TaskCandidate; disabled: boolean; suggested?: boolean; onLink: () => void }) {
+  return <div className="pulse-task-choice">
+    <div className="pulse-task-choice__content">
+      <span className="pulse-task-choice__title" title={task.title}>{task.title}</span>
+      <span className="pulse-task-choice__meta"><span>{task.key}</span><span className="pulse-task-choice__status">{task.status.replace(/_/g, " ")}</span></span>
+    </div>
+    <button type="button" className="pulse-btn pulse-task-choice__link" disabled={disabled} aria-label={`Link ${suggested ? "suggested " : ""}task ${task.key}`} onClick={onLink}>Link</button>
+  </div>;
+}
+
+function TaskDialog({ item, rpc, mode, recommendation, suggestions, integrationEnabled, onClose, restoreFocus }: { item: PulseItem; rpc: Rpc; mode: "create" | "link"; recommendation: TaskRecommendation | null; suggestions: PulseSnapshot["taskSuggestions"]; integrationEnabled: boolean; onClose: () => void; restoreFocus: () => void }) {
+  const root = useRef<HTMLDivElement>(null);
+  const [projects, setProjects] = useState<TaskProject[]>(recommendation?.projects ?? []);
+  const suggested = recommendation?.match ?? recommendation?.related;
+  const [projectId, setProjectId] = useState(suggested?.projectId ?? recommendation?.projects[0]?.id ?? "");
+  const [labels, setLabels] = useState<TaskLabel[]>([]);
+  const [selected, setSelected] = useState<string[]>(suggested?.labelIds ?? []);
+  const [title, setTitle] = useState(String(item.title ?? "").slice(0, 500));
+  const [description, setDescription] = useState([item.detail, item.url].filter(Boolean).join("\n\n").slice(0, 20000));
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<TaskCandidate[]>([]);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [statuses, setStatuses] = useState<TaskStatusFilter[]>(["todo", "backlog"]);
+  const filterKey = statuses.includes("all") ? "all" : [...statuses].sort().join(",");
+  const previousFilter = useRef(filterKey);
+  const [searchedKey, setSearchedKey] = useState("");
+  const [searching, setSearching] = useState(mode === "link");
+  const [searchError, setSearchError] = useState("");
+  const [failedCursor, setFailedCursor] = useState<string | undefined>();
+  const searchGeneration = useRef(0);
+  const searchTerm = query.trim();
+  const searchKey = JSON.stringify([searchTerm, filterKey]);
+  const [possibleTasks, setPossibleTasks] = useState<TaskCandidate[]>(recommendation?.suggestions ?? []);
+  const hasRecommendation = useRef(recommendation !== null);
+  const visiblePossibleTasks = possibleTasks.filter((task) => !item.taskLinks?.some((link) => link.id === task.id)).slice(0, 3);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+  const [suggestionsError, setSuggestionsError] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const closeRef = useRef(onClose);
+  const busyRef = useRef(busy);
+  const restoreRef = useRef(restoreFocus);
+  restoreRef.current = restoreFocus;
+  closeRef.current = onClose;
+  busyRef.current = busy;
+  useEffect(() => {
+    (root.current?.querySelector<HTMLElement>("input") ?? root.current?.querySelector<HTMLElement>("button, select"))?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" && e.key !== "Tab") return;
+      e.stopPropagation();
+      if (e.key === "Escape") { e.preventDefault(); if (!busyRef.current) closeRef.current(); return; }
+      const nodes = Array.from(root.current?.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])') ?? []);
+      if (!nodes.length) { e.preventDefault(); root.current?.focus(); return; }
+      if (!nodes.includes(document.activeElement as HTMLElement)) { e.preventDefault(); nodes[e.shiftKey ? nodes.length - 1 : 0].focus(); return; }
+      if (e.shiftKey && document.activeElement === nodes[0]) { e.preventDefault(); nodes[nodes.length - 1].focus(); }
+      else if (!e.shiftKey && document.activeElement === nodes[nodes.length - 1]) { e.preventDefault(); nodes[0].focus(); }
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      restoreRef.current();
+    };
+  }, []);
+  useEffect(() => {
+    if (!integrationEnabled || mode !== "create" || projects.length) return;
+    let live = true;
+    rpc.call("pulse_task_projects", null).then((r: { projects: TaskProject[] }) => { if (live) { setProjects(r.projects); setProjectId((id) => id || r.projects[0]?.id || ""); } }).catch((e: unknown) => { if (live) setError(errorText(e)); });
+    return () => { live = false; };
+  }, [mode, projects.length, rpc, integrationEnabled]);
+  useEffect(() => {
+    if (!integrationEnabled || !projectId || mode !== "create") return;
+    let live = true;
+    setLabels([]);
+    rpc.call("pulse_task_labels", { projectId }).then((r: { labels: TaskLabel[] }) => { if (live) { setLabels(r.labels); setSelected((ids) => ids.filter((id) => r.labels.some((l) => l.id === id))); } }).catch((e: unknown) => { if (live) setError(errorText(e)); });
+    return () => { live = false; };
+  }, [projectId, mode, rpc, integrationEnabled]);
+  const search = async (term: string, next?: string, generation = ++searchGeneration.current) => {
+    setSearching(true); setSearchError(""); setFailedCursor(undefined);
+    const key = JSON.stringify([term, filterKey]);
+    const selected = statuses.includes("all") ? undefined : statuses.filter((status): status is TaskStatus => status !== "all");
+    if (selected && !selected.length) { setResults([]); setCursor(null); setSearchedKey(key); setSearching(false); return; }
+    try {
+      const r: { tasks: TaskCandidate[]; nextCursor: string | null } = await rpc.call("pulse_task_search", { search: term, ...(next ? { cursor: next } : {}), ...(selected ? { statuses: selected } : {}) });
+      if (generation !== searchGeneration.current) return;
+      setResults((old) => next ? [...old, ...r.tasks] : r.tasks); setCursor(r.nextCursor); setSearchedKey(key);
+    } catch (e) { if (generation === searchGeneration.current) { setSearchError(errorText(e)); setFailedCursor(next); } }
+    finally { if (generation === searchGeneration.current) setSearching(false); }
+  };
+  useEffect(() => {
+    if (mode !== "link") return;
+    if (!integrationEnabled) { setSearching(false); return; }
+    const generation = ++searchGeneration.current;
+    const debounce = !!searchTerm && previousFilter.current === filterKey;
+    previousFilter.current = filterKey;
+    setSearching(true); setSearchError(""); setFailedCursor(undefined);
+    const timer = debounce ? setTimeout(() => { void search(searchTerm, undefined, generation); }, 300) : undefined;
+    if (!debounce) void search(searchTerm, undefined, generation);
+    return () => { clearTimeout(timer); ++searchGeneration.current; };
+  }, [mode, searchKey, rpc, integrationEnabled]);
+  useEffect(() => {
+    // Reuse a completed result; only fill the gap when the menu closed before it arrived.
+    if (!integrationEnabled || mode !== "link" || hasRecommendation.current || suggestions !== "available") { setSuggestionsLoading(false); return; }
+    let live = true;
+    setSuggestionsLoading(true); setSuggestionsError("");
+    rpc.call("pulse_task_recommend", { id: item.id }).then((r: TaskRecommendation) => { if (live) { hasRecommendation.current = true; setPossibleTasks(r.suggestions ?? []); } })
+      .catch(() => { if (live) setSuggestionsError("Task suggestions unavailable."); })
+      .finally(() => { if (live) setSuggestionsLoading(false); });
+    return () => { live = false; };
+  }, [mode, suggestions, item.id, rpc, integrationEnabled]);
+  useEffect(() => {
+    if (busy) root.current?.focus();
+    else if (mode === "link" && error) root.current?.querySelector<HTMLInputElement>("input")?.focus();
+  }, [mode, busy, error]);
+  const submit = async (promise: Promise<unknown>, key?: string) => {
+    setBusy(true); setError("");
+    try { taskSucceeded(await promise, item.id, key, mode === "create"); onClose(); } catch (e) { setError(errorText(e)); } finally { setBusy(false); }
+  };
+  return <div className="pulse-task-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
+    <div ref={root} tabIndex={-1} className={`pulse-task-dialog${mode === "link" ? " pulse-task-dialog--link" : ""}`} role="dialog" aria-modal="true" aria-label={mode === "create" ? "Create task" : "Link custom task"}>
+      <h3>{mode === "create" ? "Create task" : "Link custom task"}</h3>
+      {!integrationEnabled ? <p role="status">Task integration is disabled. Enable it in Pulse settings to use task actions.</p> : null}
+      {mode === "create" ? <form onSubmit={(e) => { e.preventDefault(); if (projectId && title.trim()) void submit(rpc.call("pulse_task_create", { id: item.id, projectId, title: title.trim(), description, labelIds: selected })); }}>
+        <label>Title<input className="pulse-input" maxLength={500} value={title} onChange={(e) => setTitle(e.target.value)} /></label>
+        <label>Description<textarea className="pulse-input" maxLength={20000} rows={5} value={description} onChange={(e) => setDescription(e.target.value)} /></label>
+        <label>Project<select className="pulse-input" value={projectId} onChange={(e) => { setSelected([]); setProjectId(e.target.value); }}>{projects.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.prefix})</option>)}</select></label>
+        {labels.length ? <fieldset><legend>Labels</legend>{labels.map((label) => <label key={label.id} className="pulse-task-checkbox"><input type="checkbox" checked={selected.includes(label.id)} onChange={(e) => setSelected((ids) => e.target.checked ? [...ids, label.id] : ids.filter((id) => id !== label.id))} />{label.name}</label>)}</fieldset> : null}
+        <div className="pulse-task-actions"><button type="button" className="pulse-btn" disabled={busy} onClick={onClose}>Cancel</button><button type="submit" className="pulse-btn pulse-btn--primary" disabled={busy || !integrationEnabled || !projectId || !title.trim()}>{busy ? "Creating…" : "Create task"}</button></div>
+      </form> : <>
+        <label className="pulse-task-search">Search tasks<input className="pulse-input" maxLength={200} placeholder="Search by task title or key…" value={query} disabled={busy || !integrationEnabled} onChange={(e) => setQuery(e.target.value)} /></label>
+        {suggestions === "available" || suggestions === "checking" ? <section className="pulse-task-section" aria-label="Possible related tasks">
+          <h4>Possible related tasks</h4>
+          <div className="pulse-task-results">{visiblePossibleTasks.map((task) => <TaskChoice key={task.id} task={task} suggested disabled={busy || !integrationEnabled} onLink={() => void submit(rpc.call("pulse_task_link", { id: item.id, key: task.key, recommended: true }), task.key)} />)}</div>
+          <span aria-live="polite">{(suggestions === "checking" && !hasRecommendation.current) || suggestionsLoading ? "Finding related tasks…" : suggestionsError || (!visiblePossibleTasks.length ? "No related tasks suggested." : "")}</span>
+        </section> : null}
+        <section className="pulse-task-section" aria-label="Search results" aria-busy={searching}>
+          <h4>{searchTerm ? "Search results" : "Browse tasks"}</h4>
+          <div className="pulse-task-filters" role="group" aria-label="Task status filters">{TASK_STATUS_PILLS.map((pill) => <button type="button" key={pill.value} className="pulse-filter" aria-pressed={statuses.includes(pill.value)} disabled={busy || !integrationEnabled} onClick={() => setStatuses((current) => pill.value === "all" ? ["all"] : current.includes(pill.value) ? current.filter((status) => status !== pill.value) : [...current.filter((status) => status !== "all"), pill.value])}>{pill.label}</button>)}</div>
+          <span className="pulse-task-search-status" role="status">{searching ? "Searching…" : searchError || (!statuses.length ? "Select a status to browse tasks." : !results.length ? "No tasks found." : "")}</span>
+          {searchError ? <button type="button" className="pulse-btn" disabled={busy || searching || !integrationEnabled} onClick={() => void search(searchTerm, failedCursor)}>{failedCursor ? "Retry loading more" : "Retry search"}</button> : null}
+          <div className="pulse-task-results">{results.map((task) => <TaskChoice key={task.id} task={task} disabled={busy || searching || !integrationEnabled || searchKey !== searchedKey || !!item.taskLinks?.some((link) => link.id === task.id)} onLink={() => void submit(rpc.call("pulse_task_link", { id: item.id, key: task.key }), task.key)} />)}</div>
+          {cursor && !searchError ? <button type="button" className="pulse-btn" disabled={busy || searching || !integrationEnabled || searchKey !== searchedKey} onClick={() => void search(searchTerm, cursor)}>Load more</button> : null}
+        </section>
+        <div className="pulse-task-actions"><button type="button" className="pulse-btn" disabled={busy} onClick={onClose}>Cancel</button></div>
+      </>}
+      {error ? <div role="alert">{error}</div> : null}
+    </div>
+  </div>;
 }
 
 function HistoryList({ history }: { history: PulseHistoryEntry[] }) {
@@ -343,7 +549,26 @@ function HistoryList({ history }: { history: PulseHistoryEntry[] }) {
 }
 
 /** The open item's detail: why it is where it is, who is involved, full quick-action text, history. */
-function ItemDetail({ item }: { item: PulseItem }) {
+function TaskLinks({ item, rpc, available }: { item: PulseItem; rpc: Rpc; available: boolean }) {
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const run = async (promise: Promise<unknown>) => {
+    setBusy(true); setError("");
+    try { accept(await promise); return true; } catch (e) { setError(errorText(e)); return false; }
+    finally { setBusy(false); }
+  };
+  return <div className="pulse-pop__block pulse-tasks">
+    <div className="pulse-pop__label">Linked tasks</div>
+    {(item.taskLinks ?? []).map((task) => <div key={task.id}>
+      <button type="button" disabled={!available} onClick={() => openLinkedTask(task.key)}>{task.key} · {task.title}</button>{" "}
+      <button type="button" disabled={busy || !available} onClick={() => void run(rpc.call("pulse_task_unlink", { id: item.id, taskId: task.id }))}>Unlink</button>
+    </div>)}
+    {!available ? <span className="pulse-faint">Tasks is unavailable.</span> : null}
+    {error ? <div role="alert">{error}</div> : null}
+  </div>;
+}
+
+function ItemDetail({ item, rpc, tasksAvailable, unlinkAvailable }: { item: PulseItem; rpc: Rpc; tasksAvailable: boolean; unlinkAvailable: boolean }) {
   return (
     <div className="pulse-item__more">
       <div className="pulse-pop__block"><div className="pulse-pop__label">Why it's here</div><span>{horizonReason(item)}</span></div>
@@ -355,16 +580,18 @@ function ItemDetail({ item }: { item: PulseItem }) {
         </div>
       ) : null}
       <div className="pulse-faint">First seen {fullTime(item.firstSeenAt)} · last checked by a run {ago(item.lastSeenAt)}</div>
+      {(tasksAvailable || item.taskLinks?.length) ? <TaskLinks item={item} rpc={rpc} available={unlinkAvailable} /> : null}
       <HistoryList history={item.history ?? []} />
     </div>
   );
 }
 
-function ItemRow({ item, fresh, compact = false, focused, expanded, starting, flash, onFocus, onToggle, onAction, onStartAction, onOpenAction }: {
-  item: PulseItem; fresh: boolean; compact?: boolean; focused: boolean; expanded: boolean; starting: boolean; flash: boolean;
+function ItemRow({ item, fresh, compact = false, focused, expanded, starting, flash, onFocus, onToggle, onAction, onStartAction, onOpenAction, rpc, tasksAvailable, unlinkAvailable, suggestions }: {
+  item: PulseItem; fresh: boolean; compact?: boolean; focused: boolean; expanded: boolean; starting: boolean; flash: boolean; rpc: Rpc; tasksAvailable: boolean; unlinkAvailable: boolean;
   onFocus: () => void;
   onToggle: () => void;
   onAction: (action: ItemAction, until?: string) => void;
+  suggestions: PulseSnapshot["taskSuggestions"];
   onStartAction: () => void;
   onOpenAction: () => void;
 }) {
@@ -375,8 +602,8 @@ function ItemRow({ item, fresh, compact = false, focused, expanded, starting, fl
   return (
     <li className={`pulse-item pulse-item--${item.status}${item.priority === "high" ? " pulse-item--high" : ""}${fresh ? " pulse-item--fresh" : ""}${flash ? " pulse-item--flash" : ""}`}
       aria-label={fresh ? `New: ${item.title}` : item.title} tabIndex={focused ? 0 : -1} data-item-id={item.id} data-ready={readyUnread || undefined}
-      aria-expanded={compact ? undefined : expanded} onFocus={(e) => { if (e.target === e.currentTarget) onFocus(); }}>
-      <div className="pulse-item__body" onClick={(e) => { if (!compact && !(e.target as HTMLElement).closest("a, button, input")) onToggle(); }}>
+      aria-expanded={expanded} onFocus={(e) => { if (e.target === e.currentTarget) onFocus(); }}>
+      <div className="pulse-item__body" onClick={(e) => { if (!(e.target as HTMLElement).closest("a, button, input, select, textarea, form")) onToggle(); }}>
         <div className="pulse-item__title">
           {webUrl(item.url) ? <UrlLink href={webUrl(item.url)!} className="pulse-link">{inlineCode(item.title)}</UrlLink> : <span>{inlineCode(item.title)}</span>}
         </div>
@@ -392,14 +619,14 @@ function ItemRow({ item, fresh, compact = false, focused, expanded, starting, fl
           <ActionChip item={item} onOpen={onOpenAction} />
           {closed ? <span className="pulse-faint">{item.status === "resolved" ? "Resolved" : item.status === "done" ? "Done" : "Dismissed"} {ago(item.resolvedAt ?? item.updatedAt)}{item.resolution ? ` · ${item.resolution}` : ""}</span> : <span className="pulse-faint">seen {ago(item.firstSeenAt)}</span>}
         </div>
-        {expanded && !compact ? <ItemDetail item={item} /> : null}
+        {expanded ? <ItemDetail item={item} rpc={rpc} tasksAvailable={tasksAvailable} unlinkAvailable={unlinkAvailable} /> : null}
       </div>
       <div className="pulse-item__actions">
+        <QuickMenu item={item} rpc={rpc} tasksAvailable={tasksAvailable} suggestions={suggestions} visible={item.status === "open" || item.status === "waiting"} />
         {compact && item.status === "open" ? (
           <IconButton icon="Check" label="Got it" title="Got it: dismiss this FYI" primary onClick={() => onAction("dismiss")} />
         ) : item.status === "open" || item.status === "waiting" ? (
           <>
-            <QuickMenu item={item} />
             {running
               ? <IconButton icon="ExternalLink" label="Open thread" title="Open thread: an agent is working on this" onClick={onOpenAction} />
               : <IconButton icon="pulse-bot" label="Start agent thread" busy={starting}
@@ -897,7 +1124,7 @@ const SHORTCUTS: [string, string][] = [
 ];
 
 function PulsePage() {
-  const { rpc, snapshot, overlay, error, setError, setOverlay, mutate, call, retry } = usePulse();
+  const { rpc, snapshot, overlay, taskDialog, error, setError, setOverlay, mutate, call, retry } = usePulse();
   const navigate = useBbNavigate();
   const [filter, setFilter] = useState<"all" | Source>("all");
   const [focusedId, setFocusedId] = useState<string | null>(null);
@@ -1012,7 +1239,8 @@ function PulsePage() {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const t = e.target as HTMLElement;
     if (t.closest('input, textarea, select, [contenteditable="true"], [role="menu"], .pulse-pop')) return;
-    if (shortcuts && (e.key === "Escape" || e.key === "?")) { e.preventDefault(); setShortcuts(false); return; }
+    if (shortcuts && (e.key === "Escape" || e.key === "?") && (!t.closest('[role="dialog"]') || t.closest('.pulse-shortcuts'))) { e.preventDefault(); setShortcuts(false); return; }
+    if (t.closest('[role="dialog"]')) return;
     const index = order.findIndex((i) => i.id === focusTarget);
     const cur = index >= 0 ? order[index] : undefined;
     const row = cur ? board.current?.querySelector<HTMLElement>(`[data-item-id="${CSS.escape(cur.id)}"]`) : null;
@@ -1041,7 +1269,7 @@ function PulsePage() {
   const list = (rows: PulseItem[], compact = false) => (
     <ul className={`pulse-list${compact ? " pulse-list--compact" : ""}`}>
       {rows.map((i) => <ItemRow key={i.id} item={i} compact={compact} fresh={isNew(i, seenRef) && i.status !== "snoozed"}
-        focused={focusTarget === i.id} expanded={expandedId === i.id} starting={startingIds.has(i.id)} flash={flashId === i.id}
+        focused={focusTarget === i.id} expanded={expandedId === i.id} starting={startingIds.has(i.id)} flash={flashId === i.id} rpc={rpc} tasksAvailable={!!snapshot?.tasksAvailable} unlinkAvailable={snapshot?.taskIntegrationEnabled !== false && !!(snapshot?.tasksPluginEnabled ?? snapshot?.tasksAvailable)} suggestions={snapshot?.taskSuggestions}
         onFocus={() => setFocusedId(i.id)} onToggle={() => setExpandedId((id) => (id === i.id ? null : i.id))}
         onAction={(a, u) => void act(i, a, u)} onStartAction={() => void startAction(i)} onOpenAction={() => openAction(i)} />)}
     </ul>
@@ -1052,8 +1280,9 @@ function PulsePage() {
   const next = snapshot ? nextRun(snapshot.automations) : null;
 
   return (
-    <div className="pulse" ref={board} onKeyDown={onKeyDown}>
-      <div className="pulse__inner">
+    <div className="pulse" ref={board} tabIndex={-1} onKeyDown={onKeyDown}>
+      {taskDialog ? <TaskDialog item={snapshot?.items.find((item) => item.id === taskDialog.item.id) ?? taskDialog.item} rpc={rpc} mode={taskDialog.mode} recommendation={taskDialog.recommendation} suggestions={snapshot?.taskSuggestions} integrationEnabled={snapshot?.taskIntegrationEnabled !== false} onClose={() => setShared({ taskDialog: null })} restoreFocus={() => { const trigger = taskDialog.trigger; if (trigger?.isConnected) trigger.focus(); else board.current?.focus(); }} /> : null}
+      <div className="pulse__inner" inert={!!taskDialog}>
         <header className="pulse-top">
           <nav className="pulse-filters" aria-label="Filter by source">
             {FILTERS.filter((f) => f === "all" || counts[f] || filter === f || shownFilters.current.has(f)).map((f) => (
@@ -1171,6 +1400,7 @@ const MoreIcon = ({ className }: { className?: string }) => (
 const AlertIcon = svgIcon(["m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3", "M12 9v4", "M12 17h.01"]);
 
 export default definePluginApp((app) => {
+  app.slots.settingsSection({ id: "task-integration", title: "Task integration", component: TaskIntegrationSettings });
   app.experimental_icons.register({ name: "pulse-sparkles", component: SparklesIcon });
   app.experimental_icons.register({ name: "pulse-alert", component: AlertIcon });
   app.experimental_icons.register({ name: "pulse-bot", component: BotIcon });

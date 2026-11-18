@@ -53,6 +53,8 @@ export function fakeBb({ threads: seed = {}, overrides = {}, settings: initial =
     "threads.retry": () => ({ kind: "queued" }),
     "threads.list": () => [],
     "threads.experimental_listPluginMetadata": () => ({ threads: [] }),
+    "plugins.list": () => ({ plugins: [{ id: "jev", enabled: true, status: "running" }] }),
+    "plugins.callRpc": ({ pluginId }: { pluginId: string }) => { if (pluginId === "tasks") throw new Error("plugin unavailable"); return {}; },
     "queued.list": ({ threadId }: { threadId: string }) => queues.get(threadId) ?? [],
     "queued.delete": ({ threadId, queuedMessageId }: { threadId: string; queuedMessageId: string }) => {
       queues.set(threadId, (queues.get(threadId) ?? []).filter((r) => r.id !== queuedMessageId));
@@ -81,7 +83,7 @@ export function fakeBb({ threads: seed = {}, overrides = {}, settings: initial =
     sdk: {
       threads: { ...threadsArea, queuedMessages: area("queued", ["list", "update", "delete"]) },
       threadSections: { list: async () => [{ id: "sec_1", name: "Pulse" }], create: async () => ({ id: "sec_1" }) },
-      plugins: { callRpc: async () => ({}) },
+      plugins: area("plugins", ["callRpc", "list"]),
     },
     log: { info: (m: string) => void infos.push(m), warn: (m: string) => void warns.push(m) },
     background: {

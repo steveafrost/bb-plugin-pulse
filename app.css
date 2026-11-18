@@ -247,6 +247,33 @@ header:has(.pulse-hdr) { container: pulse-bar / inline-size; }
 @keyframes pulse-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .pulse-spinner { animation: none; border-right-color: currentColor; opacity: 0.6; } }
 
+.pulse-task-overlay { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 16px; background: rgb(0 0 0 / .45); }
+.pulse-task-dialog { width: min(500px, 100%); max-height: calc(100vh - 32px); overflow: auto; padding: 16px; border: 1px solid var(--p-line); border-radius: var(--p-radius); background: var(--p-surface); color: var(--p-text); box-shadow: 0 10px 32px rgb(0 0 0 / .24); }
+.pulse-task-dialog h3 { margin: 0 0 12px; }
+.pulse-task-dialog form, .pulse-task-dialog label { display: flex; flex-direction: column; gap: 6px; }
+.pulse-task-dialog form { gap: 12px; }
+.pulse-task-dialog textarea { resize: vertical; }
+.pulse-task-dialog fieldset { border: 1px solid var(--p-line); border-radius: var(--p-radius-sm); }
+.pulse-task-dialog label.pulse-task-checkbox { flex-direction: row; align-items: center; }
+.pulse-task-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.pulse-task-results { display: flex; flex-direction: column; gap: 2px; max-height: 40vh; overflow: auto; margin-top: 12px; }
+.pulse-task-dialog--link { width: min(560px, 100%); }
+.pulse-task-section { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--p-line); }
+.pulse-task-section h4 { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--p-muted); }
+.pulse-task-section > span { font-size: 12px; color: var(--p-muted); }
+.pulse-task-section .pulse-task-results { margin-top: 0; gap: 0; }
+.pulse-task-choice { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--p-line); }
+.pulse-task-choice:last-child { border-bottom: 0; }
+.pulse-task-choice__content { flex: 1; min-width: 0; }
+.pulse-task-choice__title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; font-size: 13px; line-height: 1.4; }
+.pulse-task-choice__meta { display: flex; align-items: center; gap: 8px; margin-top: 4px; color: var(--p-muted); font-size: 11px; }
+.pulse-task-choice__status { padding: 1px 6px; border-radius: var(--p-radius-sm); background: var(--p-fill); text-transform: capitalize; }
+.pulse-task-choice__link { flex-shrink: 0; }
+.pulse-task-filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.pulse-task-filters .pulse-filter { border-color: var(--p-line); font-size: 12px; }
+.pulse-task-filters .pulse-filter[aria-pressed="true"] { background: var(--p-fill); color: var(--p-text); }
+.pulse-task-filters .pulse-filter:disabled { opacity: .5; cursor: default; }
+
 /* bb's "Close pane" × has no use on Pulse's single-pane board and the SDK has no
    opt-out, so hide it only in the title bar that holds
    Pulse's header content. */
@@ -276,7 +303,9 @@ header:has(.pulse-hdr) { container: pulse-bar / inline-size; }
 .pulse-menu__list.pulse-quick { width: 300px; gap: 2px; }
 .pulse-quick__item { display: flex; flex-direction: column; gap: 1px; padding: 6px 8px; color: var(--p-text); text-decoration: none; }
 .pulse-quick__label { font-size: 0.82rem; font-weight: 500; }
-.pulse-quick__hint { font-size: 0.7rem; color: var(--p-faint); }
+.pulse-quick__hint { font-size: 0.7rem; color: var(--p-faint); overflow-wrap: anywhere; }
+.pulse-quick__section-title { padding: 4px 8px; font-size: 0.72rem; font-weight: 600; color: var(--p-muted); }
+.pulse-quick__status { padding: 4px 8px 6px; line-height: 1.4; }
 .pulse-quick__text { margin-top: 3px; font-size: 0.76rem; color: var(--p-muted); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .pulse-icon-btn--done { color: var(--p-accent); }
 .pulse-icon-btn:disabled { opacity: 0.35; cursor: default; background: transparent; }
@@ -335,3 +364,10 @@ header:has(.pulse-hdr) { container: pulse-bar / inline-size; }
 .pulse-setup--warn { border-color: var(--p-warn); color: var(--p-text); }
 .pulse-hdr .pulse-chip { font-size: 0.74rem; }
 .pulse-item__more .pulse-pop__hist li { grid-template-columns: 170px 1fr; }
+.pulse-tasks form { display: flex; flex-wrap: wrap; gap: 6px; align-items: end; margin-top: 6px; }
+.pulse-tasks label { display: flex; flex-direction: column; gap: 2px; color: var(--p-muted); }
+.pulse-tasks input, .pulse-tasks select, .pulse-tasks button {
+  font: inherit; color: var(--p-text); background: var(--p-surface); border: 1px solid var(--p-line);
+  border-radius: var(--p-radius-sm); padding: 2px 6px; min-width: 0;
+}
+.pulse-tasks button:disabled { opacity: 0.5; }

@@ -28,6 +28,10 @@ export interface PulseItem {
   quickActions?: QuickAction[];
   /** Server-computed: skills an agent thread for this item would load (open/waiting items only). */
   agentSkills?: string[];
+  /** Tasks linked by the user; IDs remain stable when a task moves projects. */
+  taskLinks?: { id: string; key: string; title: string }[];
+  taskReopenHold?: boolean;
+  taskRevision?: number;
   /** Set when the user handed the item to an agent thread from the panel. */
   action?: PulseItemAction | null;
 }
@@ -132,6 +136,10 @@ export interface MissedRun extends RunDispatch {
 
 export interface PulseSnapshot {
   home: string;
+  tasksAvailable?: boolean;
+  taskIntegrationEnabled?: boolean;
+  tasksPluginEnabled?: boolean;
+  taskSuggestions?: "off" | "checking" | "available" | "missing" | "disabled" | "unavailable";
   generatedAt: string;
   lastViewedAt: string | null;
   items: PulseItem[];

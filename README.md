@@ -18,6 +18,17 @@ store; the panel sorts them into **Now**, **Next**, **Later** and **Nice to Know
 - **Agent threads.** The robot button starts a thread that does the work up to the point of review
   ("draft the weekly update for X"), with the skills you map to that kind of item. The card shows
   Working, then Ready with the thread's one-line summary.
+- **Tasks (optional).** With bb's Tasks plugin installed and enabled, turn on **Task integration** in
+  Pulse's Tasks settings section (off by default). An item's sparkle menu can then create a task or
+  link an existing one, linked keys show on the card, and agent threads started from the item get the
+  linked tasks as context. Turning it off keeps links and preferences but stops all Task work.
+  - **Close when tasks are done** (off by default) closes an item once every linked task is done,
+    checked every two minutes. Missing tasks or failed reads never close anything, and reopening an
+    item holds it open until a linked task goes incomplete and then completes again.
+  - **AI task recommendations** (off by default) need the Jev plugin. When on, opening Quick actions
+    sends redacted item text and up to 25 candidate task summaries to Jev (tag
+    `pulse.task-recommend`, no retries) to suggest up to three tasks to link. Credentials live in
+    Jev. Creating, searching and linking all work without it.
 
 ## Setup
 

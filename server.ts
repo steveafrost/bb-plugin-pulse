@@ -25,6 +25,8 @@ import { DEFAULT_SOURCES, runPrompt, type PromptContext, type RunName } from "./
 import { parseSkillRules, skillsFor, type SkillRule } from "./lib/skills";
 import { threadGone } from "./lib/thread-gone";
 import { actionPrompt, readySummary, type ActionContext } from "./lib/action";
+import { createTasks, taskContract } from "./lib/tasks";
+import { createTaskSettings, taskSettingsContract } from "./lib/task-settings";
 
 export { actionPrompt, readySummary, type ActionContext };
 import type { ActionStatus, Automation, ItemAction, MissedRun, PulseItem, PulseRun, PulseSnapshot, RunDispatch, RunFailure } from "./types";
@@ -96,6 +98,8 @@ export const rpcContract = defineRpcContract({
     }),
     output: z.any(),
   },
+  ...taskContract,
+  ...taskSettingsContract,
   pulse_seen: { input: z.null(), output: z.any() },
   pulse_run_now: { input: z.object({ run: z.enum(["hourly", "daily", "weekly"]) }), output: z.object({ threadId: z.string() }) },
   pulse_set_run_enabled: { input: z.object({ run: z.enum(["hourly", "daily", "weekly"]), enabled: z.boolean() }), output: z.any() },
@@ -754,13 +758,24 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
+  // Task capability changes use the same debounced notification as store writes.
+  let publishTimer: ReturnType<typeof setTimeout> | undefined;
+  const publish = () => {
+    if (publishTimer) clearTimeout(publishTimer);
+    publishTimer = setTimeout(() => bb.realtime.publish(CHANGED, { at: new Date().toISOString() }), 250);
+  };
+  // Retired native Task keys must not be registered again: old rows can survive descriptor removal.
+  const taskSettings = await createTaskSettings({ bb, onChange: () => { tasks.settingsChanged(); publish(); } });
+  const tasks = createTasks({ bb, home, getConfig: () => taskSettings.get(), readSettings: () => taskSettings.read(), publish });
+
   async function fullSnapshot(): Promise<PulseSnapshot> {
     const snap = store.snapshot(home);
     // Tell the panel which skills an agent thread would load, for the robot button's tooltip.
     const items = snap.items.map((i) => (i.status === "open" || i.status === "waiting" ? { ...i, agentSkills: skillsForItem(i).map((k) => k.name) } : i));
     const { automations, missedRuns } = await loadAutomations();
+    const capabilities = tasks.refreshCapabilities();
     return {
-      ...snap, items, automations, missedRuns, parentThreadId: null,
+      ...snap, items, ...capabilities, taskIntegrationEnabled: taskSettings.get().enabled, automations, missedRuns, parentThreadId: null,
       needsProject: !config.projectId,
       projectSetLive: loadedWithoutProject && !!config.projectId,
       homePending: config.home !== home,
@@ -768,11 +783,6 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   // Live updates: any write to the store dir (CLI or panel) nudges the panel.
-  let publishTimer: ReturnType<typeof setTimeout> | undefined;
-  const publish = () => {
-    if (publishTimer) clearTimeout(publishTimer);
-    publishTimer = setTimeout(() => bb.realtime.publish(CHANGED, { at: new Date().toISOString() }), 250);
-  };
   let watcher: fs.FSWatcher | undefined;
   try {
     watcher = fs.watch(home, { recursive: true }, (_event, file) => {
@@ -792,6 +802,23 @@ export default async function plugin(bb: BbPluginApi) {
       store.userAction(id, status, { until, by: "user", ...(action === "reopen" && restore ? { reason: "undo" } : {}) }, home);
       return fullSnapshot();
     },
+    pulse_task_settings: async () => {
+      const tasksPluginEnabled = await tasks.pluginEnabled().catch(() => false);
+      return { ...taskSettings.get(), tasksPluginEnabled };
+    },
+    pulse_task_settings_update: async (patch) => {
+      if (patch.enabled && !await tasks.pluginEnabled()) throw new Error("Install and enable Tasks before enabling Task integration");
+      await taskSettings.update(patch);
+      const tasksPluginEnabled = await tasks.pluginEnabled().catch(() => false);
+      return { ...taskSettings.get(), tasksPluginEnabled };
+    },
+    pulse_task_projects: () => tasks.projects(),
+    pulse_task_labels: (input) => tasks.labels(input),
+    pulse_task_search: (input) => tasks.search(input),
+    pulse_task_recommend: (input) => tasks.recommend(input),
+    pulse_task_link: async (input) => { await tasks.link(input); return fullSnapshot(); },
+    pulse_task_unlink: async (input) => { await tasks.unlink(input); return fullSnapshot(); },
+    pulse_task_create: async (input) => { await tasks.create(input); return fullSnapshot(); },
     pulse_seen: async () => {
       store.markSeen(undefined, home);
       return fullSnapshot();
@@ -827,7 +854,7 @@ export default async function plugin(bb: BbPluginApi) {
         ...(sectionId ? { sectionId } : {}),
         environment: { type: "project-default" },
         title: item.title.slice(0, 120),
-        prompt: actionPrompt(item, { user: config.user, sources: config.sources, timeZone: config.timeZone, skills: skillsForItem(item) }),
+        prompt: actionPrompt(taskSettings.get().enabled ? item : { ...item, taskLinks: [] }, { user: config.user, sources: config.sources, timeZone: config.timeZone, skills: skillsForItem(item) }),
         pluginMetadata: { pulseItemId: id },
       });
       try {
@@ -977,6 +1004,8 @@ export default async function plugin(bb: BbPluginApi) {
       while (!signal.aborted) {
         housekeep();
         await reconcile();
+        await tasks.reconcile(signal).catch((error) => bb.log.warn(`task reconcile: ${message(error)}`));
+        if (signal.aborted) break;
         await new Promise<void>((resolve) => {
           const t = setTimeout(resolve, RECONCILE_MS);
           signal.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
@@ -986,6 +1015,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.onDispose(async () => {
+    tasks.dispose();
     watcher?.close();
     if (publishTimer) clearTimeout(publishTimer);
   });
