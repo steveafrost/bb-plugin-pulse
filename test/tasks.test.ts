@@ -481,6 +481,51 @@ test("a transport failure stops a multi-item reconciliation pass", async () => {
   assert.equal(f.warns.filter((warning) => warning.startsWith("task reconcile")).length, 1);
 });
 
+test("a read that fails for one item doesn't starve the items after it", async () => {
+  let reads = 0;
+  const f = fakeBb({ settings: { closeOnTasksDone: true }, overrides: {
+    "plugins.callRpc": ({ method, input, outputSchema }: any) => {
+      if (method === "listProjects") return outputSchema.parse({ projects: [] });
+      if (method !== "getTask") throw new Error("unexpected method");
+      reads++;
+      if (input.taskId === a.id) throw new Error("Task cannot be read");
+      return outputSchema.parse({ task: { id: b.id, key: b.key, title: b.title, status: "done" } });
+    },
+  }});
+  await plugin(f.bb as never);
+  // Two items whose task read always fails, then one whose linked task is done. Ids sort in this
+  // order and the store sorts by first sight, so the third item is always reconciled last.
+  for (const id of ["slack:a-bad-0", "slack:a-bad-1"]) {
+    store.upsert({ ...item, id }, "manual", f.home);
+    store.changeTaskLink(id, a, false, f.home);
+  }
+  store.upsert({ ...item, id: "slack:z-good" }, "manual", f.home);
+  store.changeTaskLink("slack:z-good", b, false, f.home);
+  await f.startServices();
+  assert.equal(reads, 3, "the last item is still read after two failures");
+  assert.equal(store.getItem("slack:z-good", f.home).status, "done");
+  assert.equal(store.getItem("slack:a-bad-0", f.home).status, "open", "a failed read never closes anything");
+  assert.equal(f.warns.filter((w) => w.startsWith("task reconcile")).length, 2);
+});
+
+test("a pass stops after repeated failures, so Tasks being down costs three reads", async () => {
+  let reads = 0;
+  const f = fakeBb({ settings: { closeOnTasksDone: true }, overrides: {
+    "plugins.callRpc": ({ method, outputSchema }: any) => {
+      if (method === "listProjects") return outputSchema.parse({ projects: [] });
+      reads++;
+      throw new Error("Task cannot be read");
+    },
+  }});
+  await plugin(f.bb as never);
+  for (let i = 0; i < 5; i++) {
+    const id = `slack:down-${i}`;
+    store.upsert({ ...item, id }, "manual", f.home); store.changeTaskLink(id, a, false, f.home);
+  }
+  await f.startServices();
+  assert.equal(reads, 3);
+});
+
 test("stale task reads cannot close an item after a user changes it", () => {
   const f = setup(); store.upsert(item, "manual", f.home);
   store.changeTaskLink(item.id, b, false, f.home);

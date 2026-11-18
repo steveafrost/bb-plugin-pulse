@@ -13,6 +13,10 @@ const store = storeModule as unknown as {
   reconcileTasks(id: string, expected: PulseItem, allDone: boolean, home: string): boolean;
 };
 const TASK_CAPABILITY_TTL_MS = 30_000;
+/** Consecutive item failures after which the pass gives up: Tasks itself is probably unavailable. */
+const RECONCILE_FAILURE_LIMIT = 3;
+/** Errors that no single task read can recover from, so the whole pass stops. */
+const TASKS_GONE = /unknown plugin|not running|not installed|not enabled|plugin [^.]*unavailable|transport/i;
 const OPEN_TASK_STATUSES = ["backlog", "todo", "in_progress", "in_review"];
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
@@ -130,15 +134,22 @@ export function createTasks({ bb, home, getConfig, readSettings, publish }: {
   async function reconcileLinkedTasks(signal: AbortSignal) {
     if (!getConfig().enabled || !getConfig().closeOnTasksDone || !tasksAvailable || signal.aborted) return;
     const items = store.snapshot(home).items.filter((item) => item.taskLinks?.length && !["done", "dismissed", "resolved"].includes(item.status));
+    // One unreadable item must not end the pass: a repeatable, item-specific error would otherwise
+    // starve every item after it in a stable order. Each failed read waits out the 5 s RPC timeout,
+    // so repeated failures stop the pass and leave the rest to the next tick.
+    let failures = 0;
     for (const item of items) {
       if (signal.aborted) return;
       try {
         const tasks = await Promise.all(item.taskLinks!.map(({ id }) => taskRpc("getTask", { taskId: id }, taskResult, signal)));
+        failures = 0;
         if (signal.aborted || !getConfig().enabled || !getConfig().closeOnTasksDone || tasks.some(({ task }) => !task)) continue;
         store.reconcileTasks(item.id, item, tasks.every(({ task }) => task?.status === "done"), home);
       } catch (error) {
-        if (!signal.aborted) bb.log.warn(`task reconcile ${item.id}: ${message(error)}`);
-        return;
+        if (signal.aborted) return;
+        failures += 1;
+        bb.log.warn(`task reconcile ${item.id}: ${message(error)}`);
+        if (!getConfig().enabled || failures >= RECONCILE_FAILURE_LIMIT || TASKS_GONE.test(message(error))) return;
       }
     }
   }
