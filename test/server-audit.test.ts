@@ -90,7 +90,7 @@ test("server#2 a new run drops a pending automatic retry instead of running twic
   const f = fakeBb({ threads: { thr_run: { status: "error" } } });
   await plugin(f.bb as never);
   f.kv.set("thread:hourly", "thr_run");
-  f.queues.set("thr_run", [makeQueueEntry({ id: "qr", originPluginId: "pulse", payload: { kind: "retry" }, content: [{ type: "text", text: "[Pulse scheduled hourly run · old]" }] })]);
+  f.queues.set("thr_run", [makeQueueEntry({ id: "qr", originPluginId: null, payload: { kind: "retry" }, content: [{ type: "text", text: "[Pulse scheduled hourly run · old]" }] })]);
   await f.rpc.pulse_run_now!({ run: "hourly" });
   assert.deepEqual(f.calls["queued.delete"]?.map(([a]) => (a as { queuedMessageId: string }).queuedMessageId), ["qr"]);
   // The thread stopped on an error, so the run goes to a fresh thread: still exactly one run.
@@ -407,8 +407,29 @@ test("review: a hung thread is reported stuck even when a Pulse prompt is alread
 
 // ---- 0.1.24: a queue on a stopped thread never drains ----
 /** A queued run prompt Pulse sent, as the host stores it. */
+// bb queues every retry with no origin, even one Pulse asked for, so a retry row carries null.
 const queuedRun = (id: string, kind = "inline", extra: { waitingOn?: { kind: string } } = {}) =>
-  makeQueueEntry({ id, originPluginId: "pulse", payload: { kind }, content: [{ type: "text", text: "[Pulse scheduled hourly run · Nov 7]" }], ...extra });
+  makeQueueEntry({ id, originPluginId: kind === "retry" ? null : "pulse", payload: { kind }, content: [{ type: "text", text: "[Pulse scheduled hourly run · Nov 7]" }], ...extra });
+
+test("stuck queue: a retry waiting on its timer on Pulse's own thread is superseded, not waited on", async () => {
+  const f = fakeBb({ threads: { thr_err: { status: "error" } } });
+  await plugin(f.bb as never);
+  f.kv.set("thread:hourly", "thr_err");
+  f.queues.set("thr_err", [queuedRun("qr", "retry", { waitingOn: { kind: "time" } })]);
+  const res = await f.rpc.pulse_run_now!({ run: "hourly" });
+  assert.equal(res.threadId, "thr_new");
+  assert.deepEqual(f.queues.get("thr_err"), [], "the old retry is dropped");
+});
+
+test("stuck queue: a user's retry waiting on a pinned thread is kept and nothing is sent", async () => {
+  const f = fakeBb({ threads: { thr_pin: { status: "error" } } });
+  await plugin(f.bb as never);
+  f.changeSettings({ hourlyThread: "thr_pin" });
+  f.queues.set("thr_pin", [queuedRun("qr", "retry", { waitingOn: { kind: "time" } })]);
+  await f.rpc.pulse_run_now!({ run: "hourly" });
+  assert.deepEqual(f.queues.get("thr_pin")!.map((r) => r.id), ["qr"]);
+  assert.deepEqual(f.sends(), []);
+});
 
 test("stuck queue: a run thread that stopped on an error is retired, not refreshed forever", async () => {
   const f = fakeBb({ threads: { thr_err: { status: "error" } } });

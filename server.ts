@@ -572,8 +572,11 @@ export default async function plugin(bb: BbPluginApi) {
    * replaces its own prompt for this run (or, on its own threads, its own pending retry).
    */
   const removableRow = (r: QueuedRow, name: RunName, pinned: boolean) => {
-    if (r.originPluginId !== bb.pluginId) return false;
+    // bb queues every retry with no origin, whoever asked for it, so origin can't identify one.
+    // Only Pulse sends to its own (unpinned) threads, so a retry there re-runs an older Pulse
+    // prompt; on a pinned thread it may be the user's turn, so it is left alone.
     if (r.payload?.kind === "retry") return !pinned;
+    if (r.originPluginId !== bb.pluginId) return false;
     return rowRun(r) === name;
   };
   /**
@@ -582,7 +585,14 @@ export default async function plugin(bb: BbPluginApi) {
    * waiting like that is not stranded work, even on a thread that reads as stopped.
    */
   const WAITING_KINDS = new Set(["host-offline", "provisioning", "time", "plugin", "interaction"]);
-  const stillWaiting = (rows: QueuedRow[]) => rows.find((r) => !!r.waitingOn?.kind && WAITING_KINDS.has(r.waitingOn.kind));
+  const stillWaiting = (rows: QueuedRow[], name: RunName, pinned: boolean) =>
+    rows.find((r) => {
+      const kind = r.waitingOn?.kind;
+      if (!kind || !WAITING_KINDS.has(kind)) return false;
+      // A Pulse retry on its own thread waiting out its timer re-runs an older window; this run
+      // supersedes it. Any other wait (offline host, provisioning, a gate) holds this run too.
+      return !(kind === "time" && r.payload?.kind === "retry" && removableRow(r, name, pinned));
+    });
 
   /** Send a run's prompt to its thread (created on first run, replaced once a day). */
   async function startRun(name: RunName, trigger: "schedule" | "manual" | "catch-up"): Promise<string> {
@@ -619,7 +629,7 @@ export default async function plugin(bb: BbPluginApi) {
       if (stopped && queued) {
         const list = await rows();
         if (!list) return skipped(`skipped: could not read the queue on ${id}`);
-        const waiting = stillWaiting(list);
+        const waiting = stillWaiting(list, name, pinned);
         if (waiting) {
           // bb will deliver this row on its own, so the run is waiting, not stranded. Leaving it
           // and not sending keeps one prompt per thread; the next tick checks again.
@@ -663,9 +673,9 @@ export default async function plugin(bb: BbPluginApi) {
         if (!list) return skipped(`skipped: could not read the queue on ${id}`);
         const row = list.find((r) => isRunRow(r, name));
         // A pending automatic retry re-sends an older prompt; this one supersedes it. (Only on
-        // Pulse's own threads, and only Pulse's own retries: a pinned thread's may be the user's.)
+        // Pulse's own threads: a pinned thread's retries may be the user's.)
         if (!pinned) {
-          for (const retry of list.filter((r) => r.payload?.kind === "retry" && r.originPluginId === bb.pluginId)) {
+          for (const retry of list.filter((r) => r.payload?.kind === "retry")) {
             try {
               await bb.sdk.threads.queuedMessages.delete({ threadId: id, queuedMessageId: retry.id });
               bb.log.info(`dropped the pending retry on ${id}; the new ${name} run replaces it`);
