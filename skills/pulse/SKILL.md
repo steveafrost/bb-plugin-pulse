@@ -31,7 +31,8 @@ instead. `pulse help` prints the full syntax; `pulse doctor` checks the store fi
   the end of every capture run; omit `--sources` when nothing was read.
 - **Tasks.** The panel can create, link, open and unlink Tasks when that plugin is available.
   Pulse can close an item after every linked task is done. The setting is off by default and checks
-  every two minutes. Failed reads and missing tasks do not close the item. A user or capture reopen
+  about every two minutes after the last check. Failed reads and missing tasks do not close the
+  item, and a read that fails for one item skips only that item. A user or capture reopen
   holds until a linked task becomes incomplete and all linked tasks become done again. Removing all
   links clears the hold.
 - **Agent threads.** The panel's robot button hands an item to a new thread in the Pulse sidebar

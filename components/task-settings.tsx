@@ -151,7 +151,7 @@ export function TaskIntegrationSettings() {
               />
               <SwitchRow
                 label="Close Pulse items when all linked tasks are done"
-                description="Checks every two minutes. Reopened items stay open until a linked task becomes incomplete and is done again."
+                description="Checks about every two minutes after the last check. Reopened items stay open until a linked task becomes incomplete and is done again."
                 checked={state.closeOnTasksDone}
                 disabled={saving}
                 onChange={() => { void save({ closeOnTasksDone: !state.closeOnTasksDone }); }}

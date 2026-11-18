@@ -23,8 +23,9 @@ store; the panel sorts them into **Now**, **Next**, **Later** and **Nice to Know
   link an existing one, linked keys show on the card, and agent threads started from the item get the
   linked tasks as context. Turning it off keeps links and preferences but stops all Task work.
   - **Close when tasks are done** (off by default) closes an item once every linked task is done,
-    checked every two minutes. Missing tasks or failed reads never close anything, and reopening an
-    item holds it open until a linked task goes incomplete and then completes again.
+    checked about every two minutes after the last check. Missing tasks or failed reads never close
+    anything, a read that fails for one item skips only that item, and reopening an item holds it
+    open until a linked task goes incomplete and then completes again.
   - **AI task recommendations** (off by default) need the Jev plugin. When on, opening Quick actions
     sends redacted item text and up to 25 candidate task summaries to Jev (tag
     `pulse.task-recommend`, no retries) to suggest up to three tasks to link. Credentials live in
