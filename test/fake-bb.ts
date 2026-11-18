@@ -7,6 +7,23 @@ import path from "node:path";
 
 export type Fn = (...args: any[]) => any;
 type Thread = { id: string; status: string; createdAt: number; archivedAt: number | null; deletedAt: number | null; visibility: string; queuedMessageCount?: number };
+/** A row in a thread's queue, shaped like the host's (ThreadQueuedMessage). */
+export type QueuedRow = {
+  id: string; updatedAt: number;
+  /** The plugin that queued the row, as the host stamps it; null for a message the user queued. */
+  originPluginId?: string | null;
+  waitingOn?: { kind: string; [key: string]: unknown } | null;
+  payload: { kind: string };
+  content: { type: string; text: string }[];
+};
+/**
+ * A queued row. The host stamps the sending plugin's id on everything a plugin queues and leaves a
+ * user's own message null, so tests that mean "Pulse's row" must say so.
+ */
+export const makeQueueEntry = (row: Partial<QueuedRow> & { id: string }): QueuedRow => ({
+  updatedAt: 1, originPluginId: null, waitingOn: null, payload: { kind: "inline" },
+  content: [{ type: "text", text: "my own note" }], ...row,
+});
 
 export const MIN = 60_000;
 
@@ -23,7 +40,7 @@ export function fakeBb({ threads: seed = {}, overrides = {}, settings: initial =
   const infos: string[] = [];
   const disposers: Fn[] = [];
   const threadState = new Map<string, Thread>();
-  const queues = new Map<string, { id: string; updatedAt: number; payload: { kind: string }; content: { type: string; text: string }[] }[]>();
+  const queues = new Map<string, QueuedRow[]>();
   const thread = (id: string): Thread => {
     if (!threadState.has(id)) threadState.set(id, { id, status: "idle", createdAt: Date.now(), archivedAt: null, deletedAt: null, visibility: "hidden" });
     return threadState.get(id)!;
@@ -41,7 +58,9 @@ export function fakeBb({ threads: seed = {}, overrides = {}, settings: initial =
     "threads.send": ({ threadId, input }: { threadId: string; input: { text: string }[] }) => {
       if (thread(threadId).status === "active") {
         const q = queues.get(threadId) ?? [];
-        q.push({ id: `q${q.length + 1}`, updatedAt: Date.now(), payload: { kind: "inline" }, content: [{ type: "text", text: input[0]!.text }] });
+        const text = input[0]!.text;
+        // The host stamps the sending plugin's id on the row it queues.
+        q.push(makeQueueEntry({ id: `q${q.length + 1}`, updatedAt: Date.now(), originPluginId: "pulse", content: [{ type: "text", text }] }));
         queues.set(threadId, q);
       }
       return {};

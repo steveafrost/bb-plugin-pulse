@@ -11,7 +11,7 @@ import { execFileSync } from "node:child_process";
 import plugin from "../server.ts";
 import * as store from "../lib/store.mjs";
 
-import { cronAt, fakeBb, MIN, settle, type Fn } from "./fake-bb.ts";
+import { cronAt, fakeBb, makeQueueEntry, MIN, settle, type Fn } from "./fake-bb.ts";
 
 // ---- server.md #1 / improvement 1: a turn that died after the send counted as a success ----
 test("server#1 a run turn that fails is retried once, then recorded for the panel", async () => {
@@ -90,7 +90,7 @@ test("server#2 a new run drops a pending automatic retry instead of running twic
   const f = fakeBb({ threads: { thr_run: { status: "error" } } });
   await plugin(f.bb as never);
   f.kv.set("thread:hourly", "thr_run");
-  f.queues.set("thr_run", [{ id: "qr", updatedAt: 1, payload: { kind: "retry" }, content: [{ type: "text", text: "[Pulse scheduled hourly run · old]" }] }]);
+  f.queues.set("thr_run", [makeQueueEntry({ id: "qr", originPluginId: "pulse", payload: { kind: "retry" }, content: [{ type: "text", text: "[Pulse scheduled hourly run · old]" }] })]);
   await f.rpc.pulse_run_now!({ run: "hourly" });
   assert.deepEqual(f.calls["queued.delete"]?.map(([a]) => (a as { queuedMessageId: string }).queuedMessageId), ["qr"]);
   // The thread stopped on an error, so the run goes to a fresh thread: still exactly one run.
@@ -347,8 +347,8 @@ test("store imp4 the server's housekeeping wakes an expired snooze without a cap
   assert.equal(raw.history.at(-1).change, "snooze-expired");
 });
 
-// ---- Binks (bb-marketplace#131): an older run's log covered a newer dispatch ----
-test("binks a stamped log covers only its own dispatch, so a newer prompt can still be overdue or missed", async () => {
+// ---- review: an older run's log covered a newer dispatch ----
+test("review: a stamped log covers only its own dispatch, so a newer prompt can still be overdue or missed", async () => {
   const f = fakeBb();
   await plugin(f.bb as never);
   const now = Date.now();
@@ -367,7 +367,7 @@ test("binks a stamped log covers only its own dispatch, so a newer prompt can st
   assert.equal((await f.automation("daily")).overdue, false);
 });
 
-test("binks recording a dispatch notifies the panel", async () => {
+test("review: recording a dispatch notifies the panel", async () => {
   const f = fakeBb({ threads: { thr_run: { status: "active" } } });
   await plugin(f.bb as never);
   f.kv.set("thread:hourly", "thr_run");
@@ -380,7 +380,7 @@ test("binks recording a dispatch notifies the panel", async () => {
   assert.ok(f.count("realtime.publish") > before, "a queued-row dispatch publishes a change");
 });
 
-test("binks two runs can't pin the same thread: the earlier run keeps it, the later uses its own", async () => {
+test("review: two runs can't pin the same thread: the earlier run keeps it, the later uses its own", async () => {
   const f = fakeBb({ threads: { thr_mine: { status: "idle" } } });
   await plugin(f.bb as never);
   f.changeSettings({ dailyThread: "thr_mine", weeklyThread: "thr_mine" });
@@ -393,12 +393,12 @@ test("binks two runs can't pin the same thread: the earlier run keeps it, the la
   assert.equal(f.count("threads.spawn"), 1);
 });
 
-test("binks a hung thread is reported stuck even when a Pulse prompt is already queued behind it", async () => {
+test("review: a hung thread is reported stuck even when a Pulse prompt is already queued behind it", async () => {
   const f = fakeBb({ threads: { thr_run: { status: "active" } } });
   await plugin(f.bb as never);
   f.kv.set("thread:hourly", "thr_run");
   f.kv.set("dispatches:hourly", [{ at: new Date(Date.now() - 70 * MIN).toISOString(), threadId: "thr_run", trigger: "manual" }]);
-  f.queues.set("thr_run", [{ id: "q1", updatedAt: 1, payload: { kind: "user" }, content: [{ type: "text", text: "[Pulse manual hourly run · old]" }] }]);
+  f.queues.set("thr_run", [queuedRun("q1")]);
   f.changeSettings({ dailyCron: cronAt(180), weeklyCron: cronAt(240) });
   await f.tick("hourly");
   assert.equal(f.count("queued.update"), 0, "the queued prompt is left alone");
@@ -406,7 +406,9 @@ test("binks a hung thread is reported stuck even when a Pulse prompt is already 
 });
 
 // ---- 0.1.24: a queue on a stopped thread never drains ----
-const queuedRun = (id: string, kind = "user") => ({ id, updatedAt: 1, payload: { kind }, content: [{ type: "text", text: "[Pulse scheduled hourly run · Nov 7]" }] });
+/** A queued run prompt Pulse sent, as the host stores it. */
+const queuedRun = (id: string, kind = "inline", extra: { waitingOn?: { kind: string } } = {}) =>
+  makeQueueEntry({ id, originPluginId: "pulse", payload: { kind }, content: [{ type: "text", text: "[Pulse scheduled hourly run · Nov 7]" }], ...extra });
 
 test("stuck queue: a run thread that stopped on an error is retired, not refreshed forever", async () => {
   const f = fakeBb({ threads: { thr_err: { status: "error" } } });
@@ -425,7 +427,7 @@ test("stuck queue: a pinned thread that stopped keeps the user's queue and gets 
   const f = fakeBb({ threads: { thr_pin: { status: "error" } } });
   await plugin(f.bb as never);
   f.changeSettings({ hourlyThread: "thr_pin" });
-  const mine = { id: "qu", updatedAt: 1, payload: { kind: "user" }, content: [{ type: "text", text: "my own note" }] };
+  const mine = makeQueueEntry({ id: "qu" });
   f.queues.set("thr_pin", [queuedRun("q1"), queuedRun("qr", "retry"), mine]);
   const res = await f.rpc.pulse_run_now!({ run: "hourly" });
   assert.equal(res.threadId, "thr_pin");
@@ -444,4 +446,98 @@ test("stuck queue: an idle thread with a stranded prompt gets a fresh send, not 
   assert.equal(f.count("queued.update"), 0);
   assert.deepEqual(f.queues.get("thr_idle"), []);
   assert.deepEqual(f.sends(), ["thr_idle"]);
+});
+
+// ---- review: a queued row's text doesn't prove Pulse queued it (originPluginId does) ----
+test("review: a user's queued message that quotes a Pulse header is never deleted or overwritten", async () => {
+  const quoting = makeQueueEntry({ id: "qu", content: [{ type: "text", text: "[Pulse scheduled hourly run · Nov 7]\n\nmy own follow-up" }] });
+  const pinned = fakeBb({ threads: { thr_pin: { status: "idle" } } });
+  await plugin(pinned.bb as never);
+  pinned.changeSettings({ hourlyThread: "thr_pin" });
+  pinned.queues.set("thr_pin", [quoting]);
+  assert.equal((await pinned.rpc.pulse_run_now!({ run: "hourly" })).threadId, "thr_pin");
+  assert.deepEqual(pinned.calls["queued.delete"] ?? [], [], "another plugin's or the user's row is left alone");
+  assert.deepEqual(pinned.queues.get("thr_pin")!.map((r) => r.id), ["qu"]);
+
+  const busy = fakeBb({ threads: { thr_run: { status: "active" } } });
+  await plugin(busy.bb as never);
+  busy.kv.set("thread:hourly", "thr_run");
+  busy.queues.set("thr_run", [quoting]);
+  await busy.rpc.pulse_run_now!({ run: "hourly" });
+  assert.equal(busy.count("queued.update"), 0, "the user's message is not rewritten with the run prompt");
+  assert.equal(busy.queues.get("thr_run")![0]!.content[0]!.text, quoting.content[0]!.text);
+  assert.equal(busy.queues.get("thr_run")!.length, 2, "the run is queued behind it");
+});
+
+test("review: a Pulse queued run for another run name is left alone", async () => {
+  const f = fakeBb({ threads: { thr_run: { status: "idle" } } });
+  await plugin(f.bb as never);
+  f.kv.set("thread:hourly", "thr_run");
+  f.queues.set("thr_run", [makeQueueEntry({ id: "qd", originPluginId: "pulse", content: [{ type: "text", text: "[Pulse scheduled daily run · Nov 7]" }] })]);
+  assert.equal((await f.rpc.pulse_run_now!({ run: "hourly" })).threadId, "thr_run");
+  assert.deepEqual(f.calls["queued.delete"] ?? [], []);
+  assert.deepEqual(f.calls["queued.update"] ?? [], []);
+  assert.deepEqual(f.queues.get("thr_run")!.map((r) => r.id), ["qd"]);
+});
+
+// ---- review: a cached thread that another run pins is the user's ----
+test("review: another run's pinned thread is never used, cleared or archived", async () => {
+  const f = fakeBb({ threads: { thr_shared: { status: "error" } } });
+  await plugin(f.bb as never);
+  f.changeSettings({ dailyThread: "thr_shared" });
+  f.kv.set("thread:hourly", "thr_shared");
+  f.queues.set("thr_shared", [
+    makeQueueEntry({ id: "qd", originPluginId: "pulse", content: [{ type: "text", text: "[Pulse scheduled daily run · Nov 7]" }] }),
+    makeQueueEntry({ id: "qu" }),
+  ]);
+  const res = await f.rpc.pulse_run_now!({ run: "hourly" });
+  assert.equal(res.threadId, "thr_new", "the hourly starts its own thread instead");
+  assert.deepEqual(f.calls["threads.archive"] ?? [], [], "the daily's pinned thread is never archived");
+  assert.deepEqual(f.queues.get("thr_shared")!.map((r) => r.id), ["qd", "qu"], "and its queue is untouched");
+  assert.equal(store.getRunThreads(f.home).hourly, "thr_new");
+  // The daily still sends to its pin.
+  assert.equal((await f.rpc.pulse_run_now!({ run: "daily" })).threadId, "thr_shared");
+});
+
+// ---- review: an unreadable or uncleared queue must not turn into a second run ----
+test("review: a queue that can't be cleared stops the run instead of sending a second one", async () => {
+  const f = fakeBb({
+    threads: { thr_err: { status: "error" } },
+    overrides: { "queued.delete": () => { throw new Error("queue is locked"); } },
+  });
+  await plugin(f.bb as never);
+  f.kv.set("thread:hourly", "thr_err");
+  f.queues.set("thr_err", [queuedRun("q1")]);
+  assert.equal((await f.rpc.pulse_run_now!({ run: "hourly" })).threadId, "thr_err");
+  assert.equal(f.count("threads.send"), 0, "no second prompt while the first one is still queued");
+  assert.equal(f.count("threads.spawn"), 0);
+  assert.equal(f.count("threads.archive"), 0);
+  assert.deepEqual(f.queues.get("thr_err")!.map((r) => r.id), ["q1"]);
+  assert.match((await f.automation("hourly")).failure.error, /skipped: could not clear the queued run on thr_err/);
+});
+
+test("review: a queue that can't be read stops the run and is reported", async () => {
+  const f = fakeBb({
+    threads: { thr_idle: { status: "idle" } },
+    overrides: { "queued.list": () => { throw new Error("rpc timed out"); } },
+  });
+  await plugin(f.bb as never);
+  f.kv.set("thread:hourly", "thr_idle");
+  f.queues.set("thr_idle", [queuedRun("q1")]);
+  assert.equal((await f.rpc.pulse_run_now!({ run: "hourly" })).threadId, "thr_idle");
+  assert.equal(f.count("threads.send"), 0, "an unreadable queue isn't treated as an empty one");
+  assert.equal(f.count("threads.spawn"), 0);
+  assert.match((await f.automation("hourly")).failure.error, /skipped: could not read the queue on thr_idle/);
+});
+
+test("review: a queued row waiting on an offline host is left to bb, not replaced", async () => {
+  const f = fakeBb({ threads: { thr_wait: { status: "error" } } });
+  await plugin(f.bb as never);
+  f.kv.set("thread:hourly", "thr_wait");
+  f.queues.set("thr_wait", [queuedRun("q1", "inline", { waitingOn: { kind: "host-offline" } })]);
+  assert.equal((await f.rpc.pulse_run_now!({ run: "hourly" })).threadId, "thr_wait");
+  assert.deepEqual(f.calls["queued.delete"] ?? [], [], "the waiting prompt is not stranded work");
+  assert.equal(f.count("threads.send"), 0, "and a second prompt would run the window twice");
+  assert.equal(f.count("threads.spawn"), 0);
+  assert.deepEqual(f.queues.get("thr_wait")!.map((r) => r.id), ["q1"]);
 });

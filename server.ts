@@ -389,6 +389,9 @@ export default async function plugin(bb: BbPluginApi) {
     probeCache.set(id, { at: Date.now(), probe: result });
     return result;
   };
+  /** The run whose setting pins this thread, if any. A pin belongs to the user, not to Pulse. */
+  const pinOwner = (threadId: string): RunName | null =>
+    RUN_NAMES.find((r) => config.threads[r] !== "" && config.threads[r] === threadId) ?? null;
   /**
    * A pinned thread whose send failed permanently. Its probe can still look healthy (an
    * unavailable environment isn't archived), so without this every run would pick it again and
@@ -411,6 +414,15 @@ export default async function plugin(bb: BbPluginApi) {
     }
     const cached = (await storedRunThread(name)) ?? (prune ? await recoverRunThread(name) : null);
     if (!cached) return null;
+    // A cached id that is another run's pin is the user's thread. Never send, clear or archive it
+    // from here: forget the stale id and start this run's own thread instead.
+    const owner = pinOwner(cached);
+    if (owner && owner !== name) {
+      if (!prune) return null;
+      bb.log.warn(`${name} run thread ${cached} is the ${owner} thread setting; starting a fresh ${name} thread`);
+      await forgetRunThread(name);
+      return null;
+    }
     const p = await probe(cached, prune);
     if (p.state !== "dead") return { id: cached, pinned: false, thread: p.thread };
     if (!prune) return null;
@@ -525,16 +537,52 @@ export default async function plugin(bb: BbPluginApi) {
    * queueing a second one, so a thread stuck behind a long turn ends up with one pending run that
    * carries the current window, not a pile of stale ones.
    */
-  type QueuedRow = { id: string; updatedAt: number; payload?: { kind?: string }; content: { type: string; text?: string }[] };
-  const queuedRows = async (threadId: string): Promise<QueuedRow[]> => {
+  type QueuedRow = {
+    id: string; updatedAt: number;
+    /** The plugin that queued the row, stamped by the host; null for a message the user queued. */
+    originPluginId?: string | null;
+    /** What bb is still waiting for before it delivers the row. */
+    waitingOn?: { kind?: string } | null;
+    payload?: { kind?: string };
+    content: { type: string; text?: string }[];
+  };
+  /** The queue, or null when it can't be read: an unreadable queue must not look like an empty one. */
+  const queuedRows = async (threadId: string): Promise<QueuedRow[] | null> => {
     try {
       return (await bb.sdk.threads.queuedMessages.list({ threadId })) as QueuedRow[];
     } catch (error) {
       bb.log.warn(`could not read the queue of ${threadId}: ${message(error)}`);
-      return [];
+      return null;
     }
   };
-  const isRunRow = (r: QueuedRow) => r.payload?.kind !== "retry" && r.content.some((c) => c.type === "text" && RUN_HEADER.test(c.text ?? ""));
+  /** The run a queued row's header names. Only a row Pulse queued can name one. */
+  const rowRun = (r: QueuedRow): RunName | null => {
+    if (r.originPluginId !== bb.pluginId) return null;
+    for (const c of r.content) {
+      if (c.type !== "text") continue;
+      const m = RUN_HEADER.exec(c.text ?? "");
+      if (m) return m[1] as RunName;
+    }
+    return null;
+  };
+  /** Pulse's own queued prompt for this run. A header alone proves nothing: a user can quote one. */
+  const isRunRow = (r: QueuedRow, name: RunName) => r.payload?.kind !== "retry" && rowRun(r) === name;
+  /**
+   * A queued row this run may delete. A row of unknown origin is never Pulse's, and Pulse only ever
+   * replaces its own prompt for this run (or, on its own threads, its own pending retry).
+   */
+  const removableRow = (r: QueuedRow, name: RunName, pinned: boolean) => {
+    if (r.originPluginId !== bb.pluginId) return false;
+    if (r.payload?.kind === "retry") return !pinned;
+    return rowRun(r) === name;
+  };
+  /**
+   * Reasons bb still delivers a queued row later: a host that is offline, an environment being
+   * provisioned, a timed send, a plugin's own gate, or a question waiting on the user. A row
+   * waiting like that is not stranded work, even on a thread that reads as stopped.
+   */
+  const WAITING_KINDS = new Set(["host-offline", "provisioning", "time", "plugin", "interaction"]);
+  const stillWaiting = (rows: QueuedRow[]) => rows.find((r) => !!r.waitingOn?.kind && WAITING_KINDS.has(r.waitingOn.kind));
 
   /** Send a run's prompt to its thread (created on first run, replaced once a day). */
   async function startRun(name: RunName, trigger: "schedule" | "manual" | "catch-up"): Promise<string> {
@@ -549,6 +597,18 @@ export default async function plugin(bb: BbPluginApi) {
       const target = await resolveRunThread(name, { prune: true });
       if (!target) break;
       const { id, pinned, thread } = target;
+      // Read the queue at most once per attempt, and only when a path below needs it.
+      let listed: QueuedRow[] | null = null;
+      const rows = async () => (listed ??= await queuedRows(id));
+      /**
+       * Leave the thread alone and record why. Sending through an uncleared or unreadable queue
+       * would run the window twice; the next tick can retry once the queue is readable.
+       */
+      const skipped = async (error: string) => {
+        bb.log.warn(`${name} run ${error} (${id})`);
+        await recordFailure(name, { at, error, threadId: id });
+        return id;
+      };
       // bb only drains a thread's queue when a turn ends, so a queue on a thread that has stopped
       // (on an error, or idle) never moves. Counting it as busy would refresh the same queued
       // prompt forever and never rotate the thread.
@@ -557,14 +617,25 @@ export default async function plugin(bb: BbPluginApi) {
       const queued = (thread?.queuedMessageCount ?? 0) > 0;
       const busy = status === "active" || status === "starting" || status === "stopping" || status === "pending" || (queued && !stopped);
       if (stopped && queued) {
+        const list = await rows();
+        if (!list) return skipped(`skipped: could not read the queue on ${id}`);
+        const waiting = stillWaiting(list);
+        if (waiting) {
+          // bb will deliver this row on its own, so the run is waiting, not stranded. Leaving it
+          // and not sending keeps one prompt per thread; the next tick checks again.
+          bb.log.info(`${name} run waits: ${id} has a queued message waiting on ${waiting.waitingOn!.kind}`);
+          return id;
+        }
         // Drop Pulse's own stranded prompts (and, on its own threads, pending retries) so they
         // can't fire later on top of this run. Anything else in the queue is the user's.
-        for (const row of await queuedRows(id)) {
-          if (!isRunRow(row) && (pinned || row.payload?.kind !== "retry")) continue;
-          await bb.sdk.threads.queuedMessages.delete({ threadId: id, queuedMessageId: row.id }).then(
-            () => bb.log.info(`dropped a stranded queued run on ${id} (thread ${status})`),
-            (error) => bb.log.warn(`could not drop the stranded queued run on ${id}: ${message(error)}`),
-          );
+        for (const row of list) {
+          if (!removableRow(row, name, pinned)) continue;
+          try {
+            await bb.sdk.threads.queuedMessages.delete({ threadId: id, queuedMessageId: row.id });
+            bb.log.info(`dropped a stranded queued run on ${id} (thread ${status})`);
+          } catch (error) {
+            return skipped(`skipped: could not clear the queued run on ${id} (${message(error)})`);
+          }
         }
       }
       const old = !!thread?.createdAt && Date.now() - stamp(thread.createdAt) > ROTATE_MS;
@@ -588,16 +659,19 @@ export default async function plugin(bb: BbPluginApi) {
             return id;
           }
         }
-        const rows = await queuedRows(id);
-        const row = rows.find(isRunRow);
+        const list = await rows();
+        if (!list) return skipped(`skipped: could not read the queue on ${id}`);
+        const row = list.find((r) => isRunRow(r, name));
         // A pending automatic retry re-sends an older prompt; this one supersedes it. (Only on
-        // Pulse's own threads: a pinned thread's retries may be the user's.)
+        // Pulse's own threads, and only Pulse's own retries: a pinned thread's may be the user's.)
         if (!pinned) {
-          for (const retry of rows.filter((r) => r.payload?.kind === "retry")) {
-            await bb.sdk.threads.queuedMessages.delete({ threadId: id, queuedMessageId: retry.id }).then(
-              () => bb.log.info(`dropped the pending retry on ${id}; the new ${name} run replaces it`),
-              (error) => bb.log.warn(`could not drop the pending retry on ${id}: ${message(error)}`),
-            );
+          for (const retry of list.filter((r) => r.payload?.kind === "retry" && r.originPluginId === bb.pluginId)) {
+            try {
+              await bb.sdk.threads.queuedMessages.delete({ threadId: id, queuedMessageId: retry.id });
+              bb.log.info(`dropped the pending retry on ${id}; the new ${name} run replaces it`);
+            } catch (error) {
+              return skipped(`skipped: could not clear the queued run on ${id} (${message(error)})`);
+            }
           }
         }
         if (row) {
@@ -607,7 +681,12 @@ export default async function plugin(bb: BbPluginApi) {
             bb.log.info(`${trigger} ${name} run → ${id} (replaced the run already queued there)`);
             return id;
           } catch (error) {
-            bb.log.warn(`could not update the queued ${name} run on ${id}: ${message(error)}; queueing a new one`);
+            // The row changed or started draining under us. Sending a fresh prompt now could run
+            // the window twice, so send only once the row is confirmed gone.
+            bb.log.warn(`could not update the queued ${name} run on ${id}: ${message(error)}; re-reading the queue`);
+            const after = await queuedRows(id);
+            if (after === null || after.some((r) => r.id === row.id)) return skipped(`skipped: could not replace the queued run on ${id}`);
+            listed = after; // the row is gone; fall through and send a fresh prompt
           }
         }
       }
@@ -656,18 +735,55 @@ export default async function plugin(bb: BbPluginApi) {
       await recordDispatch(name, { at, threadId: thread.id, trigger });
       bb.log.info(`${trigger} ${name} run → new thread ${thread.id}`);
       if (retire) {
-        // Idle and not pinned (checked above); archived only once its replacement exists.
-        await bb.sdk.threads.archive({ threadId: retire }).then(
-          () => bb.log.info(`retired the previous ${name} run thread ${retire}`),
-          (error) => bb.log.warn(`could not archive the previous ${name} run thread ${retire}: ${message(error)}`),
-        );
-        probeCache.delete(retire);
+        // Checked again just before the archive: the settings can change while the replacement
+        // spawns, and the thread may have taken work in the meantime.
+        await retireRunThread(name, retire);
       }
       publish();
       return thread.id;
     } finally {
       runStarting.delete(name);
     }
+  }
+
+  /**
+   * Archive a run thread this run has finished with, after the replacement exists. Every check is
+   * repeated here because the resolve above can be minutes old: a thread that became a pin, took a
+   * turn, or holds queued work is kept, with a log line saying why.
+   */
+  async function retireRunThread(name: RunName, threadId: string) {
+    const owner = pinOwner(threadId);
+    if (owner) {
+      bb.log.warn(`kept the previous ${name} run thread ${threadId}: it is now the ${owner} thread setting`);
+      return;
+    }
+    let info: ThreadInfo & { archivedAt?: unknown; deletedAt?: unknown };
+    try {
+      info = await bb.sdk.threads.get({ threadId });
+    } catch (error) {
+      bb.log.warn(`kept the previous ${name} run thread ${threadId}: could not re-check it (${message(error)})`);
+      return;
+    }
+    if (info.archivedAt || info.deletedAt) return;
+    if (info.status !== "idle" && info.status !== "error") {
+      bb.log.info(`kept the previous ${name} run thread ${threadId}: it is ${info.status ?? "busy"} again`);
+      return;
+    }
+    // Pulse's own stranded rows were removed above, so anything still queued is someone else's.
+    const rows = await queuedRows(threadId);
+    if (!rows) {
+      bb.log.warn(`kept the previous ${name} run thread ${threadId}: its queue could not be read`);
+      return;
+    }
+    if (rows.length) {
+      bb.log.warn(`kept the previous ${name} run thread ${threadId}: it has ${rows.length} queued message(s) that are not this run's`);
+      return;
+    }
+    await bb.sdk.threads.archive({ threadId }).then(
+      () => bb.log.info(`retired the previous ${name} run thread ${threadId}`),
+      (error) => bb.log.warn(`could not archive the previous ${name} run thread ${threadId}: ${message(error)}`),
+    );
+    probeCache.delete(threadId);
   }
 
   /**
