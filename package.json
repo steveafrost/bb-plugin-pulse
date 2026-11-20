@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-pulse",
-  "version": "0.1.27",
+  "version": "0.1.29",
   "type": "module",
   "private": true,
   "description": "A live board of what needs you from Slack, Gmail and Calendar, kept current by scheduled bb agent runs.",
@@ -18,8 +18,8 @@
     "test": "node --test test/*.test.mjs && node --experimental-transform-types --import ./test/resolve-ts.mjs --test test/*.test.ts && node --import tsx --import ./test/ui-loader.mjs --test test/*.test.tsx"
   },
   "engines": {
-    "bb": ">=0.46",
-    "bbPluginSdk": ">=0.6.37"
+    "bb": ">=0.49",
+    "bbPluginSdk": ">=0.6.132"
   },
   "bb": {
     "name": "Pulse",
@@ -34,10 +34,10 @@
     ]
   },
   "dependencies": {
-    "zod": "^4.6.6"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@get-bb/plugin-sdk": "0.6.37",
+    "@get-bb/plugin-sdk": "0.6.132",
     "@testing-library/react": "^16.3.3",
     "@types/jsdom": "^30.0.0",
     "@types/node": "^22.0.0",

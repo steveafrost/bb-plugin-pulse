@@ -23,9 +23,8 @@ import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
 export const PLUGIN_ID = "jev";
-/** Pinned default. `jev-latest` and `jev-preview` move under you; pin on purpose. */
-export const DEFAULT_MODEL = "jev-1.14.0";
-export const KNOWN_MODELS = ["jev-1.14.0", "jev-latest", "jev-preview"] as const;
+export const DEFAULT_MODEL = "";
+export const KNOWN_MODELS: readonly string[] = [];
 
 // ── primitives ───────────────────────────────────────────────────────────
 /** The API accepts any string id; the id is never sent to the model. */
