@@ -16,7 +16,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
+import { defineRpcContract, type BbPluginApi, type PluginProviderReasoningLevel } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 // @ts-ignore -- plain ESM module shared with the CLI
 import * as storeModule from "./lib/store.mjs";
@@ -86,13 +86,27 @@ const stamp = (t: number | string | null | undefined) => (typeof t === "number" 
 /** The header every run prompt starts with; queued rows carrying it are Pulse's own. */
 const RUN_HEADER = /^\[Pulse (?:scheduled|manual|catch-up) (\w+) run · /;
 
+const CAPTURE_MODEL_KEY = "captureModel";
+const captureModelSchema = z.object({ providerId: z.string(), model: z.string(), reasoningLevel: z.string() });
+type CaptureModel = z.infer<typeof captureModelSchema>;
+const EMPTY_CAPTURE_MODEL: CaptureModel = { providerId: "", model: "", reasoningLevel: "" };
+const normalizeCaptureModel = (raw: unknown): CaptureModel => {
+  if (!raw || typeof raw !== "object") return { ...EMPTY_CAPTURE_MODEL };
+  const r = raw as Record<string, unknown>;
+  return {
+    providerId: typeof r.providerId === "string" ? r.providerId.trim() : "",
+    model: typeof r.model === "string" ? r.model.trim() : "",
+    reasoningLevel: typeof r.reasoningLevel === "string" ? r.reasoningLevel.trim() : "",
+  };
+};
+
 export const rpcContract = defineRpcContract({
   pulse_snapshot: { input: z.null(), output: z.any() },
   pulse_action: {
     input: z.object({
       id: z.string().min(3).max(400),
       action: z.enum(["done", "dismiss", "snooze", "reopen"]),
-      until: z.string().datetime({ offset: true }).optional(),
+      until: z.iso.datetime({ offset: true }).optional(),
       /** Undo: reopen to the status the item had before the click. */
       restore: z.enum(["open", "waiting"]).optional(),
     }),
@@ -100,6 +114,8 @@ export const rpcContract = defineRpcContract({
   },
   ...taskContract,
   ...taskSettingsContract,
+  pulse_model_get: { input: z.null(), output: captureModelSchema },
+  pulse_model_set: { input: captureModelSchema, output: captureModelSchema },
   pulse_seen: { input: z.null(), output: z.any() },
   pulse_run_now: { input: z.object({ run: z.enum(["hourly", "daily", "weekly"]) }), output: z.object({ threadId: z.string() }) },
   pulse_set_run_enabled: { input: z.object({ run: z.enum(["hourly", "daily", "weekly"]), enabled: z.boolean() }), output: z.any() },
@@ -108,6 +124,10 @@ export const rpcContract = defineRpcContract({
 });
 
 export default async function plugin(bb: BbPluginApi) {
+  const kv = bb.storage.kv;
+  const migrationKey = `${CAPTURE_MODEL_KEY}:legacy-settings-migrated`;
+  const migrationPending = (await kv.get<boolean>(migrationKey)) !== true;
+  const readLegacy = migrationPending && (await kv.get(CAPTURE_MODEL_KEY)) === undefined;
   const settings = bb.settings.define({
     project: { type: "project", label: "Project for run and agent threads", description: "Pulse creates its Hourly, Daily and Weekly threads and its agent threads here. Required." },
     userName: { type: "string", label: "Your first name", description: "Used in the prompts (\"what needs Sam\"). Empty = \"the user\".", default: "" },
@@ -126,8 +146,6 @@ export default async function plugin(bb: BbPluginApi) {
       label: "Skills for agent threads",
       description: "One rule per line: skill-name | why | regex. `*` matches every actionable item. Only installed skills are used, at most 4.",
     },
-    model: { type: "string", label: "Model for capture runs (empty = thread default)", default: "" },
-    reasoningLevel: { type: "select", label: "Reasoning level for capture runs", options: ["default", "low", "medium", "high"], experimental_optionLabels: { default: "Thread default" }, default: "default" },
     permissionMode: {
       type: "select", label: "Permission mode for capture runs", options: ["default", "accept-edits", "auto", "full"],
       experimental_optionLabels: { default: "Thread default" }, default: "default",
@@ -142,6 +160,24 @@ export default async function plugin(bb: BbPluginApi) {
     hourlyThread: { type: "string", label: "Existing thread for Hourly runs (optional thread id)", default: "" },
     dailyThread: { type: "string", label: "Existing thread for Daily runs (optional thread id)", default: "" },
     weeklyThread: { type: "string", label: "Existing thread for Weekly runs (optional thread id)", default: "" },
+    // The SDK reads only declared keys. Do not register these again after migration.
+    ...(readLegacy
+      ? {
+          model: {
+            type: "string" as const,
+            label: "Legacy model (migration only)",
+            description: "Use the provider and model picker to change this selection.",
+            default: "",
+          },
+          reasoningLevel: {
+            type: "select" as const,
+            label: "Legacy reasoning level (migration only)",
+            description: "Use the provider and model picker to change this selection.",
+            options: ["default", "low", "medium", "high"],
+            default: "default",
+          },
+        }
+      : {}),
   });
   type Values = Awaited<ReturnType<typeof settings.get>>;
   const readConfig = (v: Values) => {
@@ -152,8 +188,6 @@ export default async function plugin(bb: BbPluginApi) {
       sources: v.sources.trim() || DEFAULT_SOURCES,
       instructions: v.instructions,
       skillRules: parseSkillRules(v.skillRules, (m) => bb.log.warn(m)) as SkillRule[],
-      model: v.model.trim(),
-      reasoningLevel: (v.reasoningLevel === "default" ? "" : v.reasoningLevel) as "" | "low" | "medium" | "high",
       permissionMode: (v.permissionMode === "default" ? "" : v.permissionMode) as "" | "accept-edits" | "auto" | "full",
       cron: { hourly: v.hourlyCron.trim(), daily: v.dailyCron.trim(), weekly: v.weeklyCron.trim() } as Record<RunName, string>,
       section: v.section.trim(),
@@ -182,7 +216,23 @@ export default async function plugin(bb: BbPluginApi) {
   };
   const deadPinnedKey = (name: RunName) => `deadPinned:${name}`;
   let pinClears: Promise<void> = Promise.resolve();
-  let config = readConfig(await settings.get());
+  const initialSettings = await settings.get();
+  if (migrationPending) {
+    if (readLegacy) {
+      const model = initialSettings.model?.trim() ?? "";
+      const reasoning = initialSettings.reasoningLevel ?? "default";
+      if ((model || reasoning !== "default") && (await kv.get(CAPTURE_MODEL_KEY)) === undefined) {
+        await kv.set(CAPTURE_MODEL_KEY, {
+          providerId: "",
+          model,
+          reasoningLevel: reasoning === "default" ? "" : reasoning,
+        });
+      }
+    }
+    await kv.set(migrationKey, true);
+  }
+  let captureModel = normalizeCaptureModel(await bb.storage.kv.get(CAPTURE_MODEL_KEY));
+  let config = readConfig(initialSettings);
   const home = config.home;
   const loadedCron = { ...config.cron };
   const loadedWithoutProject = !config.projectId;
@@ -262,7 +312,6 @@ export default async function plugin(bb: BbPluginApi) {
   });
   const skillsForItem = (item: PulseItem) => skillsFor(item, config.skillRules);
 
-  // ---- Capture runs (plugin-owned schedules) ----
   const pausedKey = (name: RunName) => `paused:${name}`;
   const threadKey = (name: RunName) => `thread:${name}`;
   const dispatchKey = (name: RunName) => `dispatches:${name}`;
@@ -504,8 +553,11 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   const execution = () => ({
-    ...(config.model ? { model: config.model } : {}),
-    ...(config.reasoningLevel ? { reasoningLevel: config.reasoningLevel } : {}),
+    ...(captureModel.providerId ? { providerId: captureModel.providerId } : {}),
+    ...(captureModel.model ? { model: captureModel.model } : {}),
+    ...(captureModel.reasoningLevel
+      ? { reasoningLevel: captureModel.reasoningLevel as PluginProviderReasoningLevel }
+      : {}),
     ...(config.permissionMode ? { permissionMode: config.permissionMode } : {}),
   });
 
@@ -555,6 +607,17 @@ export default async function plugin(bb: BbPluginApi) {
       return null;
     }
   };
+  const dropQueued = async (threadId: string, rows: QueuedRow[], label: string): Promise<string | null> => {
+    const outcomes = await Promise.allSettled(
+      rows.map((row) => bb.sdk.threads.queuedMessages.delete({ threadId, queuedMessageId: row.id })),
+    );
+    let failure: string | null = null;
+    for (const outcome of outcomes) {
+      if (outcome.status === "fulfilled") bb.log.info(`dropped ${label}`);
+      else failure ??= `skipped: could not clear the queued run on ${threadId} (${message(outcome.reason)})`;
+    }
+    return failure;
+  };
   /** The run a queued row's header names. Only a row Pulse queued can name one. */
   const rowRun = (r: QueuedRow): RunName | null => {
     if (r.originPluginId !== bb.pluginId) return null;
@@ -597,6 +660,7 @@ export default async function plugin(bb: BbPluginApi) {
   /** Send a run's prompt to its thread (created on first run, replaced once a day). */
   async function startRun(name: RunName, trigger: "schedule" | "manual" | "catch-up"): Promise<string> {
     if (!config.projectId) throw new Error("Choose a project in Pulse settings first");
+    captureModel = normalizeCaptureModel(await bb.storage.kv.get(CAPTURE_MODEL_KEY));
     const startedAt = new Date();
     const at = startedAt.toISOString();
     const when = startedAt.toLocaleString("en-US", { timeZone: config.timeZone, dateStyle: "medium", timeStyle: "short" });
@@ -641,15 +705,10 @@ export default async function plugin(bb: BbPluginApi) {
         }
         // Drop Pulse's own stranded prompts (and, on its own threads, pending retries) so they
         // can't fire later on top of this run. Anything else in the queue is the user's.
-        for (const row of list) {
-          if (!removableRow(row, name, pinned)) { othersQueued = true; continue; }
-          try {
-            await bb.sdk.threads.queuedMessages.delete({ threadId: id, queuedMessageId: row.id });
-            bb.log.info(`dropped a stranded queued run on ${id} (thread ${status})`);
-          } catch (error) {
-            return skipped(`skipped: could not clear the queued run on ${id} (${message(error)})`);
-          }
-        }
+        const stranded = list.filter((row) => removableRow(row, name, pinned));
+        othersQueued = stranded.length < list.length;
+        const dropped = await dropQueued(id, stranded, `a stranded queued run on ${id} (thread ${status})`);
+        if (dropped) return skipped(dropped);
       }
       const old = !!thread?.createdAt && Date.now() - stamp(thread.createdAt) > ROTATE_MS;
       if (!pinned && !busy && !othersQueued && (old || status === "error")) {
@@ -678,14 +737,12 @@ export default async function plugin(bb: BbPluginApi) {
         // A pending automatic retry re-sends an older prompt; this one supersedes it. (Only on
         // Pulse's own threads: a pinned thread's retries may be the user's.)
         if (!pinned) {
-          for (const retry of list.filter((r) => r.payload?.kind === "retry")) {
-            try {
-              await bb.sdk.threads.queuedMessages.delete({ threadId: id, queuedMessageId: retry.id });
-              bb.log.info(`dropped the pending retry on ${id}; the new ${name} run replaces it`);
-            } catch (error) {
-              return skipped(`skipped: could not clear the queued run on ${id} (${message(error)})`);
-            }
-          }
+          const dropped = await dropQueued(
+            id,
+            list.filter((r) => r.payload?.kind === "retry"),
+            `the pending retry on ${id}; the new ${name} run replaces it`,
+          );
+          if (dropped) return skipped(dropped);
         }
         if (row) {
           try {
@@ -703,11 +760,14 @@ export default async function plugin(bb: BbPluginApi) {
           }
         }
       }
-      const sources = Object.fromEntries(Object.keys(execution()).map((k) => [k, "explicit"]));
+      const { providerId: _providerId, ...sendExecution } = execution();
+      const sources = Object.fromEntries(Object.keys(sendExecution).map((k) => [k, "explicit" as const]));
       try {
         await bb.sdk.threads.send({
-          threadId: id, mode: "queue-if-active", input,
-          ...execution(),
+          threadId: id,
+          mode: "queue-if-active",
+          input,
+          ...sendExecution,
           ...(Object.keys(sources).length ? { executionInputSources: sources } : {}),
         });
         await recordDispatch(name, { at, threadId: id, trigger });
@@ -734,6 +794,8 @@ export default async function plugin(bb: BbPluginApi) {
     runStarting.add(name);
     try {
       const sectionId = await sectionIdFor();
+      const spawnExecution = execution();
+      const spawnSources = Object.fromEntries(Object.keys(spawnExecution).map((k) => [k, "explicit" as const]));
       const thread = await bb.sdk.threads.spawn({
         projectId: config.projectId,
         ...(sectionId ? { sectionId } : {}),
@@ -741,7 +803,8 @@ export default async function plugin(bb: BbPluginApi) {
         title: `Pulse ${RUN_LABEL[name]}`,
         prompt: text,
         visibility: RUN_THREAD_VISIBILITY,
-        ...execution(),
+        ...spawnExecution,
+        ...(Object.keys(spawnSources).length ? { executionInputSources: spawnSources } : {}),
         pluginMetadata: { pulseRun: name },
       });
       await rememberRunThread(name, thread.id);
@@ -948,6 +1011,17 @@ export default async function plugin(bb: BbPluginApi) {
     pulse_task_link: async (input) => { await tasks.link(input); return fullSnapshot(); },
     pulse_task_unlink: async (input) => { await tasks.unlink(input); return fullSnapshot(); },
     pulse_task_create: async (input) => { await tasks.create(input); return fullSnapshot(); },
+    pulse_model_get: async () => {
+      captureModel = normalizeCaptureModel(await bb.storage.kv.get(CAPTURE_MODEL_KEY));
+      return captureModel;
+    },
+    pulse_model_set: async (input) => {
+      const next = normalizeCaptureModel(input);
+      await bb.storage.kv.set(CAPTURE_MODEL_KEY, next);
+      captureModel = next;
+      publish();
+      return next;
+    },
     pulse_seen: async () => {
       store.markSeen(undefined, home);
       return fullSnapshot();
@@ -968,7 +1042,6 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  // ---- Agent actions ----
   const starting = new Set<string>();
   async function startAction(id: string): Promise<string> {
     const item = store.getItem(id, home);
@@ -1099,7 +1172,8 @@ export default async function plugin(bb: BbPluginApi) {
 
   // Safety net for events missed while the plugin was reloading: reconcile running actions.
   async function reconcile() {
-    for (const item of store.actionItems("running", home)) {
+    await Promise.all(
+      store.actionItems("running", home).map(async (item) => {
       const threadId = item.action!.threadId;
       try {
         const t = await bb.sdk.threads.get({ threadId });
@@ -1114,7 +1188,8 @@ export default async function plugin(bb: BbPluginApi) {
         if (threadGone(error)) settle(threadId, "failed", "Action thread was archived or deleted");
         else bb.log.warn(`reconcile ${threadId}: ${message(error)}`);
       }
-    }
+      }),
+    );
   }
   /** Expired snoozes, aged-out FYIs, archiving: writes only when there is work. */
   const housekeep = () => {

@@ -41,7 +41,7 @@ store; the panel sorts them into **Now**, **Next**, **Later** and **Nice to Know
    [iCloud](docs/sources/icloud.md), [Google Workspace](docs/sources/google.md) and
    [Microsoft 365](docs/sources/microsoft.md), plus the ID-prefix and read-only rules that apply to
    any provider.
-4. Optional: your first name, house rules, a model, reasoning level and **permission mode** for
+4. Optional: your first name, house rules, a provider, model and reasoning level in **Capture run model**, and **permission mode** for
    runs, the three schedules, a time zone, a store directory, a sidebar section, existing threads
    to pin runs to, and skill rules for agent threads (`skill-name | why | regex`, one per line).
 5. `bb plugin reload pulse`, then press **Run now**.

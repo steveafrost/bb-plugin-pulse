@@ -4,6 +4,8 @@ import { toast } from "sonner";
 import {
   definePluginApp,
   experimental_Icon as Icon,
+  experimental_ProviderModelPicker as ProviderModelPicker,
+  type ExperimentalProviderModelPickerValue,
   UrlLink,
   useBbNavigate,
   useRealtime,
@@ -80,8 +82,7 @@ function inlineCode(text: unknown): React.ReactNode[] {
   );
 }
 
-// ---- One snapshot for the title bar and the board ----
-// Both components render from this store, so a store write costs one pulse_snapshot, errors from
+// The title bar and the board render from this store, so a store write costs one pulse_snapshot, errors from
 // either surface show in one place, and an out-of-order response never replaces a newer one.
 
 type Rpc = ReturnType<typeof useRpc<typeof rpcContract>>;
@@ -191,8 +192,6 @@ function usePulse() {
   }, []);
   return { rpc, snapshot: state.snapshot, error: state.error, overlay: state.overlay, taskDialog: state.taskDialog, setError, setOverlay, mutate, call, retry: () => requestRefetch(0) };
 }
-
-// ---- Menus ----
 
 /**
  * Shared menu behaviour: outside click and Escape close it, focus moves to the first item on
@@ -305,6 +304,7 @@ type TaskRecommendation = { match: TaskCandidate | null; related: TaskCandidate 
 
 function QuickMenu({ item, rpc, tasksAvailable, suggestions, visible }: { item: PulseItem; rpc: Rpc; tasksAvailable: boolean; suggestions: PulseSnapshot["taskSuggestions"]; visible: boolean }) {
   const m = useMenu();
+  const { open: menuOpen, close: closeMenu, root: menuRoot, trigger: menuTrigger } = m;
   const [copied, setCopied] = useState<string | null>(null);
   const [recommendation, setRecommendation] = useState<TaskRecommendation | null>(null);
   const [recommendError, setRecommendError] = useState("");
@@ -324,9 +324,12 @@ function QuickMenu({ item, rpc, tasksAvailable, suggestions, visible }: { item: 
     return () => clearTimeout(t);
   }, [copied]);
   useEffect(() => {
-    if (m.open && !loading && document.activeElement === m.trigger.current) m.root.current?.querySelector<HTMLElement>('[role="menuitem"]:not([disabled])')?.focus();
-  }, [m.open, loading]);
-  useEffect(() => { if (!visible && m.open) m.close(false); }, [visible, m.open, m.close]);
+    if (menuOpen && !loading && document.activeElement === menuTrigger.current)
+      menuRoot.current?.querySelector<HTMLElement>('[role="menuitem"]:not([disabled])')?.focus();
+  }, [menuOpen, loading, menuRoot, menuTrigger]);
+  useEffect(() => {
+    if (!visible && menuOpen) closeMenu(false);
+  }, [visible, menuOpen, closeMenu]);
   const actions = item.quickActions ?? [];
   if (!visible) return null;
   if (!actions.length && !tasksAvailable) {
@@ -412,6 +415,7 @@ function TaskDialog({ item, rpc, mode, recommendation, suggestions, integrationE
   const [searchError, setSearchError] = useState("");
   const [failedCursor, setFailedCursor] = useState<string | undefined>();
   const searchGeneration = useRef(0);
+  const searchRef = useRef<(term: string, next?: string, generation?: number) => Promise<void>>(async () => {});
   const searchTerm = query.trim();
   const searchKey = JSON.stringify([searchTerm, filterKey]);
   const [possibleTasks, setPossibleTasks] = useState<TaskCandidate[]>(recommendation?.suggestions ?? []);
@@ -470,17 +474,28 @@ function TaskDialog({ item, rpc, mode, recommendation, suggestions, integrationE
     } catch (e) { if (generation === searchGeneration.current) { setSearchError(errorText(e)); setFailedCursor(next); } }
     finally { if (generation === searchGeneration.current) setSearching(false); }
   };
+  searchRef.current = search;
   useEffect(() => {
     if (mode !== "link") return;
     if (!integrationEnabled) { setSearching(false); return; }
-    const generation = ++searchGeneration.current;
+    const generations = searchGeneration;
+    const generation = ++generations.current;
     const debounce = !!searchTerm && previousFilter.current === filterKey;
     previousFilter.current = filterKey;
-    setSearching(true); setSearchError(""); setFailedCursor(undefined);
-    const timer = debounce ? setTimeout(() => { void search(searchTerm, undefined, generation); }, 300) : undefined;
-    if (!debounce) void search(searchTerm, undefined, generation);
-    return () => { clearTimeout(timer); ++searchGeneration.current; };
-  }, [mode, searchKey, rpc, integrationEnabled]);
+    setSearching(true);
+    setSearchError("");
+    setFailedCursor(undefined);
+    const timer = debounce
+      ? setTimeout(() => {
+          void searchRef.current(searchTerm, undefined, generation);
+        }, 300)
+      : undefined;
+    if (!debounce) void searchRef.current(searchTerm, undefined, generation);
+    return () => {
+      clearTimeout(timer);
+      ++generations.current;
+    };
+  }, [mode, searchTerm, filterKey, rpc, integrationEnabled]);
   useEffect(() => {
     // Reuse a completed result; only fill the gap when the menu closed before it arrived.
     if (!integrationEnabled || mode !== "link" || hasRecommendation.current || suggestions !== "available") { setSuggestionsLoading(false); return; }
@@ -617,7 +632,15 @@ function ItemRow({ item, fresh, compact = false, focused, expanded, starting, fl
           {due && !closed ? <span className={`pulse-due${due.overdue ? " pulse-due--overdue" : due.soon ? " pulse-due--soon" : ""}`}>{due.overdue ? `Was due ${due.text}` : due.text}</span> : null}
           {item.status === "snoozed" && item.snoozedUntil ? <span className="pulse-faint">until {when(item.snoozedUntil)?.text}</span> : null}
           <ActionChip item={item} onOpen={onOpenAction} />
-          {closed ? <span className="pulse-faint">{item.status === "resolved" ? "Resolved" : item.status === "done" ? "Done" : "Dismissed"} {ago(item.resolvedAt ?? item.updatedAt)}{item.resolution ? ` · ${item.resolution}` : ""}</span> : <span className="pulse-faint">seen {ago(item.firstSeenAt)}</span>}
+          {closed ? (
+            <span className="pulse-faint">
+              {item.status === "resolved" ? "Resolved" : item.status === "done" ? "Done" : "Dismissed"}{" "}
+              {ago(item.resolvedAt ?? item.updatedAt)}
+              {item.resolution ? ` · ${item.resolution}` : ""}
+            </span>
+          ) : (
+            <span className="pulse-faint">seen {ago(item.firstSeenAt)}</span>
+          )}
         </div>
         {expanded ? <ItemDetail item={item} rpc={rpc} tasksAvailable={tasksAvailable} unlinkAvailable={unlinkAvailable} /> : null}
       </div>
@@ -768,8 +791,6 @@ function CaptureControl({ snapshot, capturing, runError, onCapture, onRun, onTog
     </div>
   );
 }
-
-// ---- Title-bar popovers (rendered by bb in the navPanel title bar via headerContent) ----
 
 const CLOSED_STATUSES = new Set(["resolved", "done", "dismissed"]);
 const CLOSED_LABEL: Record<string, string> = { done: "Done", dismissed: "Dismissed", resolved: "Resolved" };
@@ -991,7 +1012,17 @@ function RunLogPopover({ snapshot, onOpenThread }: { snapshot: PulseSnapshot; on
   return (
     <>
       <PopHead title="Run Log" count={rows.length}>
-        <label className="pulse-pop__toggle"><input type="checkbox" checked={errorsOnly} onChange={(e) => { setErrorsOnly(e.target.checked); setLimit(RUN_LOG_PAGE); }} /> Errors only</label>
+        <label className="pulse-pop__toggle">
+          <input
+            type="checkbox"
+            checked={errorsOnly}
+            onChange={(e) => {
+              setErrorsOnly(e.target.checked);
+              setLimit(RUN_LOG_PAGE);
+            }}
+          />{" "}
+          Errors only
+        </label>
       </PopHead>
       {shown.length ? (
         <ul className="pulse-pop__list">
@@ -1044,8 +1075,11 @@ function ExpandButton({ icon, label, onClick }: { icon: string; label: string; o
 
 /** Board items as the user should see them now: pending clicks applied, expired snoozes open. */
 function useItems(snapshot: PulseSnapshot | null, overlay: Record<string, Partial<PulseItem>>): PulseItem[] {
-  const now = Math.floor(Date.now() / 60_000);
-  return useMemo(() => withOverlay(snapshot?.items ?? [], overlay).map((i) => effectiveItem(i)), [snapshot, overlay, now]); // eslint-disable-line react-hooks/exhaustive-deps
+  const minuteBucket = Math.floor(Date.now() / 60_000) * 60_000;
+  return useMemo(
+    () => withOverlay(snapshot?.items ?? [], overlay).map((i) => effectiveItem(i, minuteBucket)),
+    [snapshot, overlay, minuteBucket],
+  );
 }
 
 /** Rendered by bb on the right of the title bar (navPanel headerContent): capture status and Run now. */
@@ -1316,7 +1350,10 @@ function PulsePage() {
 
         {error && !snapshot ? (
           <div className="pulse-error" role="alert">
-            {error} <button type="button" className="pulse-link" onClick={retry}>Retry</button>
+            {error}{" "}
+            <button type="button" className="pulse-link" onClick={retry}>
+              Retry
+            </button>
           </div>
         ) : null}
 
@@ -1407,7 +1444,135 @@ const MoreIcon = ({ className }: { className?: string }) => (
 );
 const AlertIcon = svgIcon(["m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3", "M12 9v4", "M12 17h.01"]);
 
+type CaptureModel = { providerId: string; model: string; reasoningLevel: string };
+const EMPTY_CAPTURE_MODEL: CaptureModel = { providerId: "", model: "", reasoningLevel: "" };
+
+function CaptureModelSettings() {
+  const rpc = useRpc<typeof rpcContract>();
+  const [value, setValue] = useState<CaptureModel | null>(null);
+  const [loadError, setLoadError] = useState("");
+  const [saveError, setSaveError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const mounted = useRef(true);
+  const loadSeq = useRef(0);
+  const writes = useRef(0);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
+    try {
+      const next = await rpc.call("pulse_model_get", null);
+      if (!mounted.current || seq !== loadSeq.current || writes.current > 0) return;
+      setValue(next);
+      setLoadError("");
+    } catch (cause) {
+      if (!mounted.current || seq !== loadSeq.current) return;
+      setLoadError(errorText(cause));
+    }
+  }, [rpc]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+  useRealtime("pulse-changed", () => {
+    void load();
+  });
+
+  const save = useCallback(
+    async (next: CaptureModel) => {
+      if (writes.current > 0) return;
+      writes.current += 1;
+      loadSeq.current += 1;
+      setSaving(true);
+      setSaveError("");
+      try {
+        const saved = await rpc.call("pulse_model_set", next);
+        if (mounted.current) setValue(saved);
+      } catch (cause) {
+        if (mounted.current) setSaveError(errorText(cause));
+      } finally {
+        writes.current -= 1;
+        if (mounted.current) setSaving(false);
+      }
+    },
+    [rpc],
+  );
+
+  if (value === null) {
+    return (
+      <div className="task-settings">
+        <p className="task-settings__status" role="status">
+          {loadError ? `Model settings could not be loaded: ${loadError}` : "Loading model settings…"}
+        </p>
+      </div>
+    );
+  }
+
+  const isCustom = !!(value.providerId || value.model || value.reasoningLevel);
+  const pickerValue: ExperimentalProviderModelPickerValue = {
+    providerId: value.providerId,
+    model: value.model,
+    reasoningLevel: value.reasoningLevel as ExperimentalProviderModelPickerValue["reasoningLevel"],
+  };
+
+  return (
+    <div className="task-settings" aria-busy={saving}>
+      <div className="task-settings__row">
+        <div className="task-settings__text">
+          <span className="task-settings__label">Model and reasoning level</span>
+          <p className="task-settings__description">
+            {isCustom
+              ? `Using ${[value.providerId, value.model, value.reasoningLevel].filter(Boolean).join(" / ")} for capture runs.`
+              : "Using thread default for capture runs."}
+          </p>
+        </div>
+        <div className="task-settings__actions">
+          <ProviderModelPicker
+            value={pickerValue}
+            disabled={saving}
+            align="end"
+            onChange={(next) => {
+              void save({
+                providerId: next.providerId,
+                model: next.model,
+                reasoningLevel: next.reasoningLevel ?? "",
+              });
+            }}
+          />
+          <button
+            type="button"
+            className="task-settings__btn"
+            disabled={saving || !isCustom}
+            onClick={() => {
+              void save(EMPTY_CAPTURE_MODEL);
+            }}
+          >
+            Use thread default
+          </button>
+        </div>
+      </div>
+      {saveError ? (
+        <p className="task-settings__error" role="alert">
+          Settings were not saved: {saveError}
+        </p>
+      ) : null}
+      {loadError ? (
+        <p className="task-settings__error" role="status">
+          Showing the last known settings: {loadError}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 export default definePluginApp((app) => {
+  app.slots.settingsSection({ id: "capture-model", title: "Capture run model", component: CaptureModelSettings });
   app.slots.settingsSection({ id: "task-integration", title: "Task integration", component: TaskIntegrationSettings });
   app.experimental_icons.register({ name: "pulse-sparkles", component: SparklesIcon });
   app.experimental_icons.register({ name: "pulse-alert", component: AlertIcon });

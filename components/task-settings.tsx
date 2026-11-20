@@ -84,12 +84,31 @@ export function TaskIntegrationSettings() {
     }
   }, [rpc]);
 
-  // First read, then every 30 seconds: the Tasks plugin can be installed or turned
-  // off in another window while this section stays open.
+  // The Tasks plugin can be installed or turned off in another window while this section stays open.
   useEffect(() => {
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const start = () => {
+      timer ??= setInterval(() => {
     void load();
-    const timer = setInterval(() => { void load(); }, REFRESH_MS);
-    return () => { clearInterval(timer); };
+      }, REFRESH_MS);
+    };
+    const stop = () => {
+      clearInterval(timer);
+      timer = undefined;
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void load();
+        start();
+      } else stop();
+    };
+    void load();
+    if (document.visibilityState === "visible") start();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      stop();
+    };
   }, [load]);
 
   useRealtime("pulse-changed", () => { void load(); });
